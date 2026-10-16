@@ -1,0 +1,63 @@
+{
+  "name": "@xbot/deepseek-harness-a2a",
+  "version": "0.1.6",
+  "private": false,
+  "description": "A2A device bridge plugin for DeepSeek Harness on Windows",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs && node scripts/build-defaults.mjs",
+    "test": "npm run build && node --test",
+    "prepack": "npm run build",
+    "pack:release": "node scripts/stage-release.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@types/node": "^20.0.0",
+    "react": "18.3.1",
+    "react-test-renderer": "18.3.1",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist",
+    "manifest.json",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "xbot-deepseek-harness-a2a": "./dist/cli.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    }
+  }
+}

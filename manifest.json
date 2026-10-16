@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "com.xbot.deepseek-harness-a2a",
+  "name": "Xbot A2A Device Bridge",
+  "description": "Connect the native Harness Agent to the platform A2A endpoint through an outbound relay.",
+  "version": "0.1.6",
+  "entry": "dist/index.js",
+  "cli": "dist/cli.js",
+  "loader": {
+    "type": "deepseek-harness-cordis-bundle",
+    "patch": "cordis.patch.yml"
+  },
+  "runtime": {
+    "node": ">=22.19.0"
+  },
+  "host": "deepseek-harness",
+  "transports": [
+    "private-pull-relay"
+  ],
+  "oauth": {
+    "flow": "authorization_code_pkce",
+    "redirectUri": "http://127.0.0.1:43127/oauth/callback",
+    "publicClient": true,
+    "provider": "platform",
+    "metadataPath": "/api/a2a/oauth/metadata"
+  },
+  "permissions": [
+    "agents",
+    "tools",
+    "network"
+  ],
+  "scopes": [
+    "device.connect",
+    "device.task.receive",
+    "device.task.report"
+  ]
+}

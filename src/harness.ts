@@ -1,0 +1,255 @@
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+
+import { openAuthorizationUrl } from './browser.js'
+import { startOAuthCallbackServer, type OAuthCallbackServer } from './oauth-callback.js'
+import { createBridge, type A2ABridge } from './plugin.js'
+import { createPlatformBridgeConfig } from './platform.js'
+import { HarnessSessionIndex } from './session-index.js'
+import { installWorkspaceSettings, resolveWorkingDirectory } from './workspace-settings.js'
+import type {
+  A2AMessage,
+  HarnessAgentHandle,
+  HarnessContext,
+  HarnessCordisContext,
+  HarnessConfigString,
+  HarnessPluginConfig,
+  HarnessRunContext,
+  HarnessRunResult,
+  HarnessSessionEvent,
+} from './types.js'
+
+export const name = 'xbot-deepseek-harness-a2a'
+export const inject = ['agents', 'agentDefaultModel'] as const
+export { Config } from './workspace-settings.js'
+
+function inputText(input: unknown): string {
+  return typeof input === 'string' ? input : JSON.stringify(input)
+}
+
+function messageText(input: unknown): string {
+  const message = input as Partial<A2AMessage> | null
+  if (!message || message.role !== 'ROLE_USER' || !Array.isArray(message.parts) || !message.parts.length) {
+    throw new Error('A2A Message must contain user text parts')
+  }
+  if (message.parts.some((part) => !part || typeof part.text !== 'string' || part.data !== undefined || part.raw !== undefined || part.uri !== undefined)) {
+    throw new Error('This Harness Agent currently accepts text Message parts only')
+  }
+  const text = message.parts.map((part) => part.text).join('\n')
+  if (!text.trim()) throw new Error('A2A Message text must not be empty')
+  return text
+}
+
+function resultText(messages: ReadonlyArray<{ role: string; content: ReadonlyArray<{ type?: string; text?: string }> }>): string {
+  const assistant = [...messages].reverse().find((message) => message.role === 'assistant')
+  const text = assistant?.content
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('')
+  return text || 'Harness agent completed without a text response.'
+}
+
+function configuredString(value: HarnessConfigString | undefined): string | undefined {
+  return (typeof value === 'string' ? value : value?.get())?.trim() || undefined
+}
+
+/** Provider failures sometimes echo request credentials. Keep summaries bounded
+ * and never send raw tool arguments, stdout, or the complete session log. */
+function diagnosticText(value: string): string {
+  return value
+    .replace(/\b(?:sk-|xa2a_)[A-Za-z0-9_-]+/gu, '[redacted]')
+    .replace(/\bBearer\s+[^\s,;"'}]+/giu, 'Bearer [redacted]')
+    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password)\b(["']?\s*[:=]\s*["']?)[^\s,"';&}]+/giu, '$1$2[redacted]')
+    .replace(/[\r\n\t]+/gu, ' ')
+    .slice(0, 500)
+}
+
+function failedTurn(events: readonly HarnessSessionEvent[], sessionId: string): Error | undefined {
+  const ending = [...events].reverse().find((event) => event.type === 'turn/end')
+  const reason = ending?.data?.reason
+  if (reason?.kind === 'completed') return undefined
+  const hints: Record<string, string> = {
+    blocked: 'Harness 会话被阻止，请检查客户端的输入或审批提示。',
+    'max-tokens': 'Harness 达到模型输出上限，请缩小任务后继续。',
+    interrupted: 'Harness 会话被中断，请检查客户端运行状态。',
+    aborted: 'Harness 会话已取消。',
+  }
+  const code = reason?.error?.code ?? reason?.kind ?? 'MISSING_TURN_END'
+  const parts = [`Harness task did not complete (${diagnosticText(code)})`]
+  if (reason?.error?.message) parts.push(diagnosticText(reason.error.message))
+  else if (reason && hints[reason.kind]) parts.push(hints[reason.kind]!)
+  if (reason?.error?.status) parts.push(`HTTP ${reason.error.status}`)
+  const lastFailedTool = [...events].reverse().find((event) =>
+    event.type === 'tool/result' && event.data?.message?.isError === true,
+  )
+  if (lastFailedTool) {
+    const call = events.find((event) => event.type === 'tool/call'
+      && event.data?.callId === lastFailedTool.data?.message?.toolCallId)
+    const detail = lastFailedTool.data?.error
+    parts.push(`工具 ${diagnosticText(call?.data?.name ?? 'unknown')}${detail?.code ? ` (${diagnosticText(detail.code)})` : ''}${detail?.reason ? `: ${diagnosticText(detail.reason)}` : ''}`)
+  }
+  parts.push(`DSH 会话: ${sessionId}`)
+  return new Error(parts.join('；'))
+}
+
+export function createNativeHarnessContext(ctx: HarnessCordisContext, config: HarnessPluginConfig = {}, options: { sessionDirectory?: string } = {}): HarnessContext {
+  const sessions = options.sessionDirectory ? new HarnessSessionIndex(options.sessionDirectory) : undefined
+  return {
+    agents: {
+      run: async (_skillId: string, input: unknown, runContext: HarnessRunContext): Promise<HarnessRunResult> => {
+        const native = runContext.executionMode === 'a2a-message'
+        const text = native ? messageText(input) : inputText(input)
+        const selected = ctx.agentDefaultModel?.currentSelection?.()
+        const provider = configuredString(config.provider) ?? (process.env.A2A_LLM_PROVIDER?.trim() || undefined) ?? selected?.provider
+        const model = configuredString(config.model) ?? (process.env.A2A_LLM_MODEL?.trim() || undefined) ?? selected?.model
+        const agentOptions = {
+          ...(provider ? { provider } : {}),
+          ...(model ? { model } : {}),
+        }
+        const presets = ctx.get?.('agentPresets')
+        if (!presets) throw new Error('当前 Harness 未提供 Agent 模式服务，请使用支持的 Harness 0.2 版本并启用 Agent 模式。插件不会创建缺少工具和权限策略的会话。')
+        const preset = await presets.resolve(configuredString(config.agentPreset))
+        if (preset.broken) throw new Error(`Harness Agent 模式 ${preset.id} 不可用：${diagnosticText(preset.broken)}`)
+        const setup = async (agentContext: unknown, agent: HarnessAgentHandle['agent']) => {
+          if (agent.session.header?.agentPreset !== preset.id) {
+            throw new Error('DSH 会话的 Agent 模式与本地记录不一致，请在平台开启新对话。')
+          }
+          // Match DSH's native session controller: creation alone does not
+          // attach a preset's isolated tools, prompts, and permission policies.
+          await presets.mount(agentContext, preset.id)
+        }
+        async function execute(handle: HarnessAgentHandle, cwd: string, sessionId: string, beforeRun?: () => Promise<void>): Promise<HarnessRunResult> {
+          const abort = () => {
+            try {
+              handle.agent.cancel?.({ kind: 'user' })
+            } catch {
+              // During host shutdown DSH may have already withdrawn its inbox
+              // projection. EventTarget rethrows listener errors as uncaught
+              // exceptions, so cancellation cannot throw from this callback.
+              // The aborted run still waits for whenIdle and handle.dispose.
+            }
+          }
+          runContext.signal.addEventListener('abort', abort, { once: true })
+          try {
+            runContext.signal.throwIfAborted()
+            if (native && handle.agent.session.header?.cwd !== cwd) {
+              throw new Error('DSH 会话工作目录与本地记录不一致，请在平台开启新对话。')
+            }
+            await beforeRun?.()
+            runContext.signal.throwIfAborted()
+            const priorEventCount = handle.agent.session.snapshotEvents?.().length ?? 0
+            handle.agent.followup({
+              id: randomUUID(),
+              role: 'user',
+              content: [{ type: 'text', text }],
+              source: { kind: 'user' },
+            })
+            await handle.agent.whenIdle()
+            runContext.signal.throwIfAborted()
+            if (handle.agent.session.snapshotEvents) {
+              const error = failedTurn(handle.agent.session.snapshotEvents().slice(priorEventCount), sessionId)
+              if (error) throw error
+            }
+            return { text: resultText(handle.agent.session.deriveMessages()) }
+          } finally {
+            runContext.signal.removeEventListener('abort', abort)
+            await handle.dispose()
+          }
+        }
+        if (!native) {
+          const cwd = await resolveWorkingDirectory(ctx, config)
+          runContext.signal.throwIfAborted()
+          const sessionId = `xbot-a2a-${randomUUID()}`
+          return execute(await ctx.agents.create({ sessionId, meta: { cwd, agentPreset: preset.id }, agentOptions, setup, signal: runContext.signal }), cwd, sessionId)
+        }
+        if (!sessions || !runContext.sessionScope || !ctx.get?.('sessionPersistence')) {
+          throw new Error('原生 A2A 对话需要本地授权和 Harness 会话持久化服务。')
+        }
+        return sessions.withContext(runContext.sessionScope, runContext.contextId, runContext.signal, async (binding, save) => {
+          const cwd = await resolveWorkingDirectory(ctx, config)
+          runContext.signal.throwIfAborted()
+          if (binding) {
+            if (binding.cwd !== cwd) throw new Error('工作目录已更改，请在平台开启新对话；旧会话不会切换项目目录。')
+            if (!binding.agentPreset) throw new Error('此对话由旧版插件创建，未绑定 Harness Agent 模式，请在平台开启新对话。')
+            if (binding.agentPreset !== preset.id) throw new Error('Agent 模式已更改，请在平台开启新对话；旧会话不会切换工具和权限策略。')
+            if (!ctx.agents.resume) throw new Error('当前 Harness 版本不支持恢复会话，请升级 Harness。')
+            return execute(await ctx.agents.resume({ resumeSessionId: binding.sessionId, agentOptions, setup, signal: runContext.signal }), cwd, binding.sessionId)
+          }
+          const sessionId = `xbot-a2a-${randomUUID()}`
+          return execute(await ctx.agents.create({ sessionId, meta: { cwd, agentPreset: preset.id }, agentOptions, setup, signal: runContext.signal }), cwd, sessionId, () => save(cwd, sessionId, preset.id))
+        })
+      },
+    },
+    logger: {
+      info: (message, fields) => console.info(`[${name}] ${message}`, fields ?? ''),
+      warn: (message, fields) => console.warn(`[${name}] ${message}`, fields ?? ''),
+      error: (message, fields) => console.error(`[${name}] ${message}`, fields ?? ''),
+    },
+    ui: {
+      confirm: async (reason) => {
+        const approved = config.approveRemoteTasks === true
+        if (!approved) {
+          console.warn(`[${name}] remote task approval denied by default: ${reason}`)
+        }
+        return approved
+      },
+    },
+  }
+}
+
+/** Native DeepSeek Harness/Cordis entry. The host owns the effect lifecycle. */
+export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {}): void {
+  installWorkspaceSettings(ctx, config)
+  ctx.effect(() => {
+    let bridge: A2ABridge | undefined
+    let callback: OAuthCallbackServer | undefined
+    let callbackTimer: ReturnType<typeof setTimeout> | undefined
+    let release: (() => Promise<void>) | undefined
+    let disposed = false
+    const closeCallback = () => {
+      clearTimeout(callbackTimer)
+      const active = callback
+      callback = undefined
+      // Do not await an active callback HTTP response from inside that response.
+      if (active) void active.close()
+    }
+    const start = (async () => {
+      const prepared = await createPlatformBridgeConfig(config, openAuthorizationUrl, ctx.baseUrl)
+      release = prepared.release
+      if (disposed) return
+      prepared.config.oauth.prepareAuthorization = async () => {
+        if (disposed) throw new Error('Harness plugin has stopped')
+        if (callback) await callback.close()
+        callback = await startOAuthCallbackServer(prepared.config.oauth.redirectUri, async (code, state) => {
+          if (!bridge || disposed) throw new Error('A2A bridge is not running')
+          await bridge.completeAuthorization(code, state)
+        }, async (state) => {
+          if (!bridge || disposed) throw new Error('A2A bridge is not running')
+          await bridge.cancelAuthorization(state)
+        })
+        callbackTimer = setTimeout(() => {
+          closeCallback()
+          console.warn(`[${name}] authorization timed out; restart the plugin to retry`)
+        }, 600_000)
+        callbackTimer.unref()
+      }
+      prepared.config.oauth.authorizationCompleted = async () => { closeCallback() }
+      bridge = createBridge(createNativeHarnessContext(ctx, config, { sessionDirectory: join(prepared.directory, 'sessions') }), prepared.config)
+      console.info(`[${name}] loaded; connecting to platform ${prepared.config.gatewayUrl}`)
+      await bridge.start()
+    })().catch(async (error: unknown) => {
+      closeCallback()
+      await release?.()
+      release = undefined
+      if (!disposed) console.error(`[${name}] failed to start`, error instanceof Error ? error.message : 'Unknown error')
+    })
+
+    return async () => {
+      disposed = true
+      await start.catch(() => undefined)
+      await bridge?.stop()
+      closeCallback()
+      await release?.()
+    }
+  })
+}
