@@ -60,8 +60,9 @@ internal tools.
 On first launch, the plugin reads the platform's authorization metadata,
 creates a device authorization request with an S256 PKCE challenge, and opens
 the platform's **连接本地智能体** authorization page. Sign in with your platform
-account and approve the displayed Harness instance. Return to **子 Agent**, refresh
-the list, select the local agent and save. No client secret or platform admin session is
+account and approve the displayed Harness instance. Return to **子 Agent** and
+select the local agent; the list refreshes and configuration saves automatically.
+No client secret or platform admin session is
 stored in Harness. The loopback callback is
 `http://127.0.0.1:43127/oauth/callback`; it listens only while authorization is
 pending and closes after completion or ten minutes. If a browser does not open,
@@ -86,9 +87,10 @@ is recovered on the next start.
 
 The plugin rotates refresh tokens before access-token expiry. If the platform
 revokes the grant or it expires, polling pauses and one new authorization page
-opens. It does not repeatedly launch the browser on every poll. Choosing
-**断开连接** for the local agent in **子 Agent** immediately prevents further task access; reauthorizing
-requires a fresh approval. `A2A_PROFILE` or the plugin `profile` property can
+opens. It does not repeatedly launch the browser on every poll. Removing a target
+with the trash icon in **子 Agent** changes only that calling Agent's configuration;
+it does not revoke the shared device grant. A revoked grant requires fresh approval.
+`A2A_PROFILE` or the plugin `profile` property can
 explicitly select credential isolation for a custom host; native Harness uses
 its profile's Cordis `baseUrl` automatically.
 
