@@ -10,20 +10,20 @@ diagnostic; installing that executable alone does not enable a Harness plugin.
 
 In the platform, open an Agent's **子 Agent → 添加子 Agent**, then select the
 **info** icon for connection instructions and a direct download of version
-**0.1.6**. There is no separate device list or download page.
+**0.1.7**. There is no separate device list or download page.
 
 In the Windows graphical client:
 
 1. Open **Plugins**. If the bridge is already installed, uninstall the old
    version first; DSH does not upgrade an installed bundle in place.
 2. Select **Add plugin**. In **包名或地址**, enter the downloaded file's full
-   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.6.tgz`.
+   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.7.tgz`.
 3. In **安装源**, select the npm official registry (`https://registry.npmjs.org/`)
    or a working default registry. A plugin `.tgz` URL belongs in **包名或地址**,
    never in **安装源** / `--registry`.
 4. Install, then click **立即启用 / Enable now**. Successful pnpm output only
    confirms installation; the graphical client installs bundles disabled.
-5. Fully exit and restart Harness. Check the installed version is **0.1.6**.
+5. Fully exit and restart Harness. Check the installed version is **0.1.7**.
 
 Perform these steps in the same graphical client/profile. An installation in a
 separate CLI profile does not activate it in the graphical client. Uninstalling
@@ -32,7 +32,7 @@ the bundle does not remove the bridge's separately stored platform credentials.
 For a CLI profile:
 
 ```powershell
-dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.6.tgz
+dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.7.tgz
 dsh --profile demo
 ```
 
@@ -100,8 +100,13 @@ device grants. The backend must separately support the external issuer.
 ## Workspace and conversations
 
 Open **设置 → Xbot 平台任务**, also available in
-**Plugins → @xbot/deepseek-harness-a2a → 配置**. Choose an existing Harness project,
-pick a local folder, or enter a full path. Choose an **Agent 预设（工具集）** and
+**Plugins → @xbot/deepseek-harness-a2a → 配置**. **工作区（项目目录）** is one
+directory setting: choose an existing Harness workspace, pick a local folder,
+or enter a full path. These are three ways to choose the same directory. The
+first task registers that directory as a native workspace and attaches its
+session, so it appears under that directory in the left sidebar. **使用 Harness
+默认目录** uses the host's default directory; it does not follow whichever
+workspace is temporarily selected in the browser. Choose an **Agent 预设（工具集）** and
 **模型** from the host's actual catalogs, then select **保存任务配置**. Empty values
 inherit Harness defaults; clearing an override restores inheritance. The host
 checks that the directory exists and is accessible before saving and execution.
@@ -115,15 +120,25 @@ Tool approvals and sandbox enforcement continue through Harness, and existing
 sessions retain their original permissions.
 
 A new A2A `contextId` creates a persistent DSH session. Subsequent messages with
-the same context resume that session, including after restarting Harness.
+the same context reuse the live session, or resume it after restarting Harness.
+Each completed turn is flushed to native session storage. The session stays
+attached to its workspace and visible after the task finishes.
 Requests for the same context execute sequentially. The plugin only resumes
 sessions it created, and isolates mappings by platform/profile and local
 authorization epoch. Reauthorizing starts a new scope; refreshing tokens does
 not. Changing the working directory or Agent preset requires a new platform
-conversation; continuing an old context is rejected. Model changes apply to
-subsequent tasks.
-The session remains in Harness history, but the plugin does not automatically
-switch the desktop's selected conversation.
+conversation; continuing an old context is rejected. The plugin's model setting
+is the default for new sessions. Existing sessions retain their native model
+selection, including changes made in DSH. The plugin does not automatically
+switch the desktop's selected conversation. It rejects a task if that session
+is already running in the DSH UI, without canceling the user's work.
+
+Hosted Agents submit local sub-Agent calls asynchronously and receive a task
+receipt immediately. Completion, failure, cancellation, or a request for input
+returns to the original platform conversation. Use `call_agent` with
+`action=get` and the receipt's task ID to inspect it; do not submit the same task
+again while waiting. The platform chat refreshes completed background results
+while idle and when the page becomes visible again.
 
 ## Protocol and execution boundary
 
@@ -141,19 +156,19 @@ execution explicitly and keeps legacy skill handlers separate. Upgrading does
 not reinterpret old queued skill jobs as native Agent messages.
 
 Native execution uses `ctx.agents.create()` or `resume()`, `agent.followup()`,
-`agent.whenIdle()`, and `handle.dispose()`. Remote tasks use the host's actual
+`agent.whenIdle()`, and `ctx.sessions.flush()`. Remote tasks use the host's actual
 agent runtime. Approval-required tasks are denied unless `approveRemoteTasks`
 is explicitly enabled. The platform checks ownership, grant validity, and the
 calling Agent's selected sub-agents. A device token cannot dispatch tasks.
 The pull loop observes cancellation through standard `GetTask` and passes it
 to Harness; cancellation latency depends on polling and the active tool.
 
-Persistent context means saved conversation history, not a persistent desktop
-process. The plugin releases the Agent handle after each task. Harness cancels
-background jobs owned by that Agent; its Windows ACL runner also uses
-`KILL_ON_JOB_CLOSE`. A GUI application such as Notepad may therefore close when
-the task ends. Shell submission or a completed Task alone does not prove that a
-visible window opened or remains open. The adapter mounts the selected native
+The plugin retains its native Agent handles until the plugin stops, then calls
+`handle.dispose()`. A task finishing does not remove the session from the DSH
+sidebar or close its handle. Plugin shutdown still cancels Agent-owned
+background jobs; the Windows ACL runner also uses `KILL_ON_JOB_CLOSE`. Shell
+submission or a completed Task alone does not prove that a visible window opened
+or remains open. The adapter mounts the selected native
 Agent preset to supply tools and preserves Harness sandbox enforcement. Start a
 new platform conversation when upgrading a context created by 0.1.5 without a
 recorded Agent preset.
@@ -168,7 +183,7 @@ revocation, single reauthorization, native execution and package metadata.
 For transport diagnosis without Harness:
 
 ```powershell
-npm install .\xbot-deepseek-harness-a2a-0.1.6.tgz
+npm install .\xbot-deepseek-harness-a2a-0.1.7.tgz
 npx xbot-deepseek-harness-a2a
 # Revoke this diagnostic profile's authorization:
 npx xbot-deepseek-harness-a2a --logout

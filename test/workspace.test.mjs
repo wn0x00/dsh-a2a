@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { createNativeHarnessContext } from '../dist/harness.js'
+import { apply, createNativeHarnessContext } from '../dist/harness.js'
+import { A2ABridge } from '../dist/plugin.js'
+import { lockProfile, profileStorageDirectory } from '../dist/token-store.js'
 import { Config, configuredWorkingDirectory, installWorkspaceSettings, isFullyQualifiedDirectory, resolveWorkingDirectory, validateHostDirectory } from '../dist/workspace-settings.js'
 
 async function fixture(t) {
@@ -27,22 +29,41 @@ function context(contextId = 'context', sessionScope = 'local-authorization') {
 
 function host(workspace, options = {}) {
   const stored = new Map()
-  const calls = { creates: [], resumes: [], messages: [], disposed: [] }
+  const live = new Map()
+  const workspaces = new Map()
+  const calls = { creates: [], resumes: [], messages: [], disposed: [], flushes: [], attachments: [], cancels: [] }
   const handle = (id, header) => ({
     agent: {
+      status: 'idle',
       followup(value) { calls.messages.push({ sessionId: id, value }) },
       async whenIdle() { await options.whenIdle?.() },
-      cancel() {},
+      cancel() { calls.cancels.push(id) },
       session: { header, deriveMessages: () => [{ role: 'assistant', content: [{ type: 'text', text: '结果' }] }] },
     },
-    async dispose() { calls.disposed.push(id) },
+    async dispose() { calls.disposed.push(id); live.delete(id); await options.dispose?.() },
   })
   return {
     calls,
     stored,
+    live,
+    workspaces,
     ctx: {
       get(name) {
         if (name === 'sessionPersistence') return {}
+        if (name === 'sessions') return { async flush(session) { await options.flush?.(session); calls.flushes.push(session); return options.persistencePresent !== false } }
+        if (name === 'workspaceRegistry') return { async create(path) {
+          let item = workspaces.get(path)
+          if (!item) {
+            item = { id: `workspace-${workspaces.size}`, path, sessionIds: [], async attachSession(id) {
+              await options.attachSession?.(id)
+              assert.equal(stored.get(id).cwd, path)
+              if (!item.sessionIds.includes(id)) item.sessionIds.push(id)
+              calls.attachments.push(id)
+            } }
+            workspaces.set(path, item)
+          }
+          return item
+        } }
         if (name === 'agentPresets') return {
           async resolve(id) { return { id: id || 'standard' } },
           async mount() {},
@@ -55,18 +76,22 @@ function host(workspace, options = {}) {
         }
       },
       agents: {
+        get(id) { return live.get(id)?.agent },
         async create(value) {
           calls.creates.push(value)
           stored.set(value.sessionId, value.meta)
           const created = handle(value.sessionId, value.meta)
           await value.setup?.({}, created.agent)
+          live.set(value.sessionId, created)
           return created
         },
         async resume(value) {
           calls.resumes.push(value)
+          assert.equal(live.has(value.resumeSessionId), false, 'must reuse the existing writer')
           if (!stored.has(value.resumeSessionId)) throw new Error('Persisted session missing')
           const resumed = handle(value.resumeSessionId, stored.get(value.resumeSessionId))
           await value.setup?.({}, resumed.agent)
+          live.set(value.resumeSessionId, resumed)
           return resumed
         },
       },
@@ -136,18 +161,29 @@ test('selected host directory must map into the current filesystem execution wor
 
 test('standard Message runs only its text in configured cwd and resumes a controlled session across adapter restarts', async (t) => {
   const { root, workspace } = await fixture(t)
-  const { ctx, calls } = host(workspace)
+  const { ctx, calls, live, workspaces } = host(workspace)
   const options = { sessionDirectory: join(root, 'sessions') }
   const first = createNativeHarnessContext(ctx, { workingDirectory: workspace }, options)
+  t.after(() => first.dispose())
   await first.agents.run('', message('第一段'), context())
+  await first.agents.run('', message('第二段'), context())
+  assert.equal(calls.resumes.length, 0)
+  assert.equal(calls.disposed.length, 0)
+  assert.equal(live.size, 1)
+  assert.deepEqual(workspaces.get(workspace).sessionIds, [calls.creates[0].sessionId])
+  assert.equal(calls.flushes.length, 2)
+  await first.dispose()
+  assert.equal(live.size, 0)
   const second = createNativeHarnessContext(ctx, { workingDirectory: workspace }, options)
+  t.after(() => second.dispose())
   await second.agents.run('', message('继续'), context())
   assert.equal(calls.creates.length, 1)
   assert.equal(calls.resumes.length, 1)
   assert.equal(calls.resumes[0].resumeSessionId, calls.creates[0].sessionId)
   assert.equal(calls.creates[0].meta.cwd, workspace)
-  assert.deepEqual(calls.messages.map((item) => item.value.content), [[{ type: 'text', text: '第一段' }], [{ type: 'text', text: '继续' }]])
-  assert.equal(calls.disposed.length, 2)
+  assert.deepEqual(calls.messages.map((item) => item.value.content), [[{ type: 'text', text: '第一段' }], [{ type: 'text', text: '第二段' }], [{ type: 'text', text: '继续' }]])
+  assert.equal(calls.disposed.length, 1)
+  assert.equal(workspaces.size, 1)
   const files = await readdir(options.sessionDirectory)
   const saved = JSON.parse(await readFile(join(options.sessionDirectory, files[0]), 'utf8'))
   assert.match(saved.sessionId, /^xbot-a2a-/)
@@ -206,10 +242,141 @@ test('unsupported message parts, deleted projects and unavailable persisted sess
   await assert.rejects(native.agents.run('', { ...message(), parts: [{ data: { cwd: '/other' } }] }, context()), /text Message parts only/)
   assert.equal(calls.creates.length, 0)
   await native.agents.run('', message(), context())
+  await native.dispose()
   stored.clear()
-  await assert.rejects(native.agents.run('', message(), context()), /Persisted session missing/)
+  const restarted = createNativeHarnessContext(ctx, { workingDirectory: workspace }, { sessionDirectory: join(root, 'sessions') })
+  await assert.rejects(restarted.agents.run('', message(), context()), /Persisted session missing/)
   assert.equal(calls.messages.length, 1)
   await rm(workspace, { recursive: true })
-  await assert.rejects(native.agents.run('', message(), context('new')), /工作目录不存在/)
+  await assert.rejects(restarted.agents.run('', message(), context('new')), /工作目录不存在/)
   assert.equal(calls.creates.length, 1)
+})
+
+test('a DSH-opened session is reused without taking its writer ownership', async (t) => {
+  const { root, workspace } = await fixture(t)
+  const { ctx, calls, live } = host(workspace)
+  const options = { sessionDirectory: join(root, 'sessions') }
+  const first = createNativeHarnessContext(ctx, {}, options)
+  await first.agents.run('', message(), context())
+  const created = calls.creates[0]
+  await first.dispose()
+  const uiHandle = await ctx.agents.resume({ resumeSessionId: created.sessionId })
+  const native = createNativeHarnessContext(ctx, {}, options)
+  await native.agents.run('', message('继续'), context())
+  assert.equal(calls.resumes.length, 1, 'remote invocation must not open a second writer')
+  await native.dispose()
+  assert.equal(live.get(created.sessionId), uiHandle, 'plugin disposal must not close the UI-owned session')
+  assert.equal(calls.disposed.length, 1)
+  await uiHandle.dispose()
+})
+
+test('a busy DSH session is neither interrupted nor mistaken for the remote task', async (t) => {
+  const { root, workspace } = await fixture(t)
+  const { ctx, calls, live } = host(workspace)
+  const native = createNativeHarnessContext(ctx, {}, { sessionDirectory: join(root, 'sessions') })
+  t.after(() => native.dispose())
+  await native.agents.run('', message(), context())
+  const handle = live.get(calls.creates[0].sessionId)
+  handle.agent.status = 'running'
+  await assert.rejects(native.agents.run('', message('must not enqueue'), context()), /正在处理其他输入/)
+  assert.equal(calls.messages.length, 1)
+  assert.equal(calls.cancels.length, 0)
+  assert.equal(calls.disposed.length, 0)
+})
+
+test('a missing workspace service or failed attachment cannot run an invisible task', async (t) => {
+  const { root, workspace } = await fixture(t)
+  for (const missing of [true, false]) {
+    const { ctx, calls } = host(workspace, { attachSession: async () => { throw new Error('workspace storage unavailable') } })
+    const get = ctx.get.bind(ctx)
+    if (missing) ctx.get = (name) => name === 'workspaceRegistry' ? undefined : get(name)
+    const native = createNativeHarnessContext(ctx, {}, { sessionDirectory: join(root, `sessions-${missing}`) })
+    t.after(() => native.dispose())
+    await assert.rejects(native.agents.run('', message(), context()), missing ? /工作区服务/ : /workspace storage unavailable/)
+    assert.equal(calls.messages.length, 0)
+    assert.equal(calls.disposed.length, missing ? 0 : 1)
+  }
+})
+
+test('task completion waits for the session flush while keeping its workspace entry', async (t) => {
+  const { root, workspace } = await fixture(t)
+  let flushStarted, release
+  const flushing = new Promise((resolve) => { flushStarted = resolve })
+  const gate = new Promise((resolve) => { release = resolve })
+  const { ctx, calls, workspaces } = host(workspace, { flush: async () => { flushStarted(); await gate } })
+  const native = createNativeHarnessContext(ctx, {}, { sessionDirectory: join(root, 'sessions') })
+  t.after(() => native.dispose())
+  let completed = false
+  const run = native.agents.run('', message(), context()).then(() => { completed = true })
+  await flushing
+  assert.equal(completed, false)
+  assert.equal(calls.disposed.length, 0)
+  assert.deepEqual(workspaces.get(workspace).sessionIds, [calls.creates[0].sessionId])
+  release()
+  await run
+  assert.equal(completed, true)
+  assert.equal(calls.flushes.length, 1)
+})
+
+test('canceling a remote turn flushes it and preserves the writer for the next turn', async (t) => {
+  const { root, workspace } = await fixture(t)
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const { ctx, calls, live } = host(workspace, { whenIdle: () => gate })
+  const native = createNativeHarnessContext(ctx, {}, { sessionDirectory: join(root, 'sessions') })
+  t.after(() => native.dispose())
+  const controller = new AbortController()
+  const run = native.agents.run('', message('cancel me'), { ...context(), signal: controller.signal })
+  const rejected = assert.rejects(run, { name: 'AbortError' })
+  while (!calls.messages.length) await new Promise((resolve) => setImmediate(resolve))
+  controller.abort()
+  release()
+  await rejected
+  assert.equal(calls.cancels.length, 1)
+  assert.equal(calls.flushes.length, 1)
+  assert.equal(calls.disposed.length, 0)
+  await native.agents.run('', message('continue'), context())
+  assert.equal(calls.messages.length, 2)
+  assert.equal(calls.resumes.length, 0)
+  assert.equal(live.size, 1)
+  await native.dispose()
+  assert.equal(live.size, 0)
+  assert.equal(calls.disposed.length, 1)
+})
+
+test('a flush without a durability participant cannot report a completed task', async (t) => {
+  const { root, workspace } = await fixture(t)
+  const { ctx } = host(workspace, { persistencePresent: false })
+  const native = createNativeHarnessContext(ctx, {}, { sessionDirectory: join(root, 'sessions') })
+  t.after(() => native.dispose())
+  await assert.rejects(native.agents.run('', message(), context()), /无法确认任务记录已保存/)
+})
+
+test('plugin unload releases profile ownership after a retained session close fails', async (t) => {
+  const { root, workspace } = await fixture(t)
+  const { ctx, calls } = host(workspace, { dispose: async () => { throw new Error('session close failed after drain') } })
+  let cleanup, ready, stopped = false
+  const started = new Promise((resolve) => { ready = resolve })
+  const gatewayUrl = 'http://127.0.0.1:8000'
+  const profile = 'unload-failure-test'
+  const storageDirectory = join(root, 'credentials')
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    authorization_endpoint: `${gatewayUrl}/authorize`,
+    token_endpoint: `${gatewayUrl}/token`,
+  }))
+  t.mock.method(A2ABridge.prototype, 'start', async function () {
+    await this.ctx.agents.run('', message(), context())
+    ready()
+  })
+  t.mock.method(A2ABridge.prototype, 'stop', async () => { stopped = true })
+  ctx.effect = (effect) => { cleanup = effect() }
+  apply(ctx, { gatewayUrl, profile, storageDirectory, workingDirectory: workspace })
+  await started
+  const directory = profileStorageDirectory(gatewayUrl, `platform:${profile}`, storageDirectory)
+  await assert.rejects(lockProfile(directory), /already connected/)
+  await assert.rejects(cleanup(), AggregateError)
+  assert.equal(stopped, true)
+  assert.equal(calls.disposed.length, 1)
+  const release = await lockProfile(directory)
+  await release()
 })

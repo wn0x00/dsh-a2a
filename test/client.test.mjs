@@ -355,7 +355,7 @@ test('settings has a discoverable entry and real project, preset, model and inhe
   assert.match(page.text(), /工作区写入/)
   assert.match(page.text(), /外部操作需要审批/)
   assert.match(page.text(), /MiMo Pro/)
-  await page.select('已有项目', 'project-a')
+  await page.select('工作区', 'project-a')
   await page.select('Agent 预设', 'coding')
   await page.select('模型', JSON.stringify(['deepseek', 'deepseek-chat']))
   await page.save()
@@ -366,6 +366,25 @@ test('settings has a discoverable entry and real project, preset, model and inhe
     { op: 'set', path: ['model'], value: 'deepseek-chat' },
   ])
   assert.equal(page.writes[0].revision, 3)
+})
+
+test('workspace selection, manual directory and native picker share one saved directory', async (t) => {
+  const page = await renderConfiguration(t)
+  assert.doesNotMatch(page.text(), /已有项目/)
+  await page.select('工作区', 'project-a')
+  assert.equal(page.input().props.value, 'C:\\Projects\\existing')
+  await page.choose()
+  const selector = () => page.view.root.findAllByType('select')
+    .find((item) => item.props['aria-label'] === '工作区')
+  assert.equal(selector().props.value, '__custom__')
+  await page.edit('c:/projects/EXISTING/')
+  assert.equal(selector().props.value, 'project-a')
+  await page.select('工作区', '')
+  assert.equal(page.input().props.value, '')
+  await page.save()
+  assert.deepEqual(page.writes[0].ops, [
+    { op: 'set', path: ['workingDirectory'], value: '' },
+  ])
 })
 
 test('clearing the directory and model restores host defaults through the same saved configuration', async (t) => {

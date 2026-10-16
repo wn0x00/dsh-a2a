@@ -95,6 +95,8 @@ export type HarnessSkill = (
 ) => Promise<HarnessRunResult>
 
 export type HarnessContext = {
+  /** Release retained native sessions after the bridge has drained its tasks. */
+  dispose?: () => Promise<void>
   /** Map this to the public Agent/Session invocation API in the installed
    * Harness release. The bridge itself does not import private Harness code. */
   agents: {
@@ -129,6 +131,17 @@ export type HarnessCordisContext = {
       stat?: (path: unknown) => Promise<{ type: string } | undefined>
     } | undefined
     (name: 'sessionPersistence'): unknown
+    (name: 'sessions'): {
+      flush: (session: HarnessAgentHandle['agent']['session']) => Promise<boolean>
+    } | undefined
+    (name: 'workspaceRegistry'): {
+      create: (path: string) => Promise<HarnessWorkspace>
+    } | undefined
+    (name: 'sessionProjections'): {
+      stateOf: (session: HarnessAgentHandle['agent']['session'], key: 'modelSelection') => {
+        pending?: HarnessModelSelection | null
+      } | undefined
+    } | undefined
     (name: 'agentPresets'): {
       resolve: (id?: string) => Promise<{ id: string; broken?: string }>
       mount: (context: unknown, id: string) => Promise<unknown>
@@ -138,6 +151,7 @@ export type HarnessCordisContext = {
     currentSelection: () => { provider?: string; model?: string }
   }
   agents: {
+    get?: (sessionId: string) => HarnessAgentHandle['agent'] | undefined
     create: (options: {
       sessionId: string
       signal?: AbortSignal
@@ -158,6 +172,8 @@ export type HarnessCordisContext = {
 export type HarnessAgentHandle = {
       agent: {
         id?: string
+        status?: 'idle' | 'running'
+        options?: { provider?: string; model?: string; reasoningEffort?: string }
         followup: (message: {
           id: string
           role: 'user'
@@ -168,6 +184,7 @@ export type HarnessAgentHandle = {
         cancel?: (cause: { kind: 'user' }) => void
         session: {
           header?: { cwd?: string; agentPreset?: string }
+          requestHeader?: () => { config: HarnessModelSelection; adapterDefaults?: { reasoningEffort?: boolean } } | undefined
           snapshotEvents?: () => ReadonlyArray<HarnessSessionEvent>
           deriveMessages: () => ReadonlyArray<{
             role: string
@@ -176,6 +193,19 @@ export type HarnessAgentHandle = {
         }
       }
       dispose: () => Promise<void>
+}
+
+/** DSH workspaces own a canonical directory and durable session membership. */
+export type HarnessWorkspace = {
+  id: string
+  path: string
+  attachSession: (sessionId: string) => Promise<void>
+}
+
+export type HarnessModelSelection = {
+  provider: string
+  model: string
+  reasoningEffort?: string
 }
 
 /** Only diagnostic fields are read; raw commands and tool output stay local. */

@@ -17,10 +17,11 @@ import type {
   HarnessRunContext,
   HarnessRunResult,
   HarnessSessionEvent,
+  HarnessWorkspace,
 } from './types.js'
 
 export const name = 'xbot-deepseek-harness-a2a'
-export const inject = ['agents', 'agentDefaultModel'] as const
+export const inject = ['agents', 'agentDefaultModel', 'workspaceRegistry', 'sessions'] as const
 export { Config } from './workspace-settings.js'
 
 function inputText(input: unknown): string {
@@ -94,10 +95,23 @@ function failedTurn(events: readonly HarnessSessionEvent[], sessionId: string): 
 
 export function createNativeHarnessContext(ctx: HarnessCordisContext, config: HarnessPluginConfig = {}, options: { sessionDirectory?: string } = {}): HarnessContext {
   const sessions = options.sessionDirectory ? new HarnessSessionIndex(options.sessionDirectory) : undefined
+  const retained = new Map<string, HarnessAgentHandle>()
+  let disposed = false
+  let disposal: Promise<void> | undefined
   return {
+    dispose: () => disposal ??= (async () => {
+      disposed = true
+      const handles = [...retained.values()]
+      retained.clear()
+      const outcomes = await Promise.allSettled(handles.map((handle) => handle.dispose()))
+      const failures = outcomes.filter((outcome) => outcome.status === 'rejected')
+      if (failures.length) throw new AggregateError(failures.map((outcome) => outcome.reason), 'Harness sessions could not be closed')
+    })(),
     agents: {
       run: async (_skillId: string, input: unknown, runContext: HarnessRunContext): Promise<HarnessRunResult> => {
+        if (disposed) throw new Error('Harness plugin has stopped')
         const native = runContext.executionMode === 'a2a-message'
+        const sessionStore = ctx.get?.('sessions')
         const text = native ? messageText(input) : inputText(input)
         const selected = ctx.agentDefaultModel?.currentSelection?.()
         const provider = configuredString(config.provider) ?? (process.env.A2A_LLM_PROVIDER?.trim() || undefined) ?? selected?.provider
@@ -114,11 +128,27 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
           if (agent.session.header?.agentPreset !== preset.id) {
             throw new Error('DSH 会话的 Agent 模式与本地记录不一致，请在平台开启新对话。')
           }
+          // Follow DSH's durable model selection on a cold resume. Plugin
+          // settings seed new sessions; they must not reset a model changed
+          // later in DSH's native session controls or change host defaults.
+          const pending = ctx.get?.('sessionProjections')?.stateOf(agent.session, 'modelSelection')?.pending
+          const logged = agent.session.requestHeader?.()
+          const restored = pending ?? logged?.config
+          if (restored && agent.options) {
+            agent.options.provider = restored.provider
+            agent.options.model = restored.model
+            const reasoningEffort = pending
+              ? pending.reasoningEffort
+              : logged?.adapterDefaults?.reasoningEffort ? undefined : logged?.config.reasoningEffort
+            if (reasoningEffort) agent.options.reasoningEffort = reasoningEffort
+            else delete agent.options.reasoningEffort
+          }
           // Match DSH's native session controller: creation alone does not
           // attach a preset's isolated tools, prompts, and permission policies.
           await presets.mount(agentContext, preset.id)
         }
-        async function execute(handle: HarnessAgentHandle, cwd: string, sessionId: string, beforeRun?: () => Promise<void>): Promise<HarnessRunResult> {
+        async function execute(handle: HarnessAgentHandle, cwd: string, sessionId: string, workspace?: HarnessWorkspace, beforeRun?: () => Promise<void>): Promise<HarnessRunResult> {
+          let keep = retained.get(sessionId) === handle
           const abort = () => {
             try {
               handle.agent.cancel?.({ kind: 'user' })
@@ -126,18 +156,29 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
               // During host shutdown DSH may have already withdrawn its inbox
               // projection. EventTarget rethrows listener errors as uncaught
               // exceptions, so cancellation cannot throw from this callback.
-              // The aborted run still waits for whenIdle and handle.dispose.
+              // The aborted run still waits for idle and its durability barrier.
             }
           }
-          runContext.signal.addEventListener('abort', abort, { once: true })
           try {
             runContext.signal.throwIfAborted()
             if (native && handle.agent.session.header?.cwd !== cwd) {
               throw new Error('DSH 会话工作目录与本地记录不一致，请在平台开启新对话。')
             }
+            if (handle.agent.session.header?.agentPreset !== preset.id) {
+              throw new Error('DSH 会话的 Agent 模式与本地记录不一致，请在平台开启新对话。')
+            }
             await beforeRun?.()
+            await workspace?.attachSession(sessionId)
             runContext.signal.throwIfAborted()
+            if (native) {
+              retained.set(sessionId, handle)
+              keep = true
+            }
+            if (handle.agent.status === 'running') {
+              throw new Error('DSH 会话正在处理其他输入，请等待当前任务完成后重试。')
+            }
             const priorEventCount = handle.agent.session.snapshotEvents?.().length ?? 0
+            runContext.signal.addEventListener('abort', abort, { once: true })
             handle.agent.followup({
               id: randomUUID(),
               role: 'user',
@@ -153,7 +194,13 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
             return { text: resultText(handle.agent.session.deriveMessages()) }
           } finally {
             runContext.signal.removeEventListener('abort', abort)
-            await handle.dispose()
+            // DSH emits api-session/removed when a live handle is disposed.
+            // Keep normal native sessions visible and release them only with
+            // the plugin. Explicit flush replaces close's durability barrier.
+            if (keep) {
+              if (!await sessionStore!.flush(handle.agent.session)) throw new Error('DSH 会话未连接持久化服务，无法确认任务记录已保存。')
+            }
+            else await handle.dispose()
           }
         }
         if (!native) {
@@ -162,21 +209,36 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
           const sessionId = `xbot-a2a-${randomUUID()}`
           return execute(await ctx.agents.create({ sessionId, meta: { cwd, agentPreset: preset.id }, agentOptions, setup, signal: runContext.signal }), cwd, sessionId)
         }
-        if (!sessions || !runContext.sessionScope || !ctx.get?.('sessionPersistence')) {
+        if (!sessions || !runContext.sessionScope || !ctx.get?.('sessionPersistence') || !sessionStore) {
           throw new Error('原生 A2A 对话需要本地授权和 Harness 会话持久化服务。')
         }
+        const workspaces = ctx.get?.('workspaceRegistry')
+        if (!workspaces) throw new Error('当前 Harness 未提供工作区服务，请启用原生工作区后重试。')
         return sessions.withContext(runContext.sessionScope, runContext.contextId, runContext.signal, async (binding, save) => {
-          const cwd = await resolveWorkingDirectory(ctx, config)
+          const selectedCwd = await resolveWorkingDirectory(ctx, config)
           runContext.signal.throwIfAborted()
+          if (binding && binding.cwd !== selectedCwd) throw new Error('工作目录已更改，请在平台开启新对话；旧会话不会切换项目目录。')
+          const workspace = await workspaces.create(selectedCwd)
+          const cwd = workspace.path
           if (binding) {
             if (binding.cwd !== cwd) throw new Error('工作目录已更改，请在平台开启新对话；旧会话不会切换项目目录。')
             if (!binding.agentPreset) throw new Error('此对话由旧版插件创建，未绑定 Harness Agent 模式，请在平台开启新对话。')
             if (binding.agentPreset !== preset.id) throw new Error('Agent 模式已更改，请在平台开启新对话；旧会话不会切换工具和权限策略。')
+            const live = retained.get(binding.sessionId)
+            const registered = ctx.agents.get?.(binding.sessionId)
+            if (live && (!ctx.agents.get || registered === live.agent)) return execute(live, cwd, binding.sessionId, workspace)
+            if (live) {
+              retained.delete(binding.sessionId)
+              await live.dispose()
+            }
+            // A user can reopen a persisted plugin session in DSH before the
+            // next remote turn. Reuse that writer without taking its ownership.
+            if (registered) return execute({ agent: registered, dispose: async () => {} }, cwd, binding.sessionId, workspace)
             if (!ctx.agents.resume) throw new Error('当前 Harness 版本不支持恢复会话，请升级 Harness。')
-            return execute(await ctx.agents.resume({ resumeSessionId: binding.sessionId, agentOptions, setup, signal: runContext.signal }), cwd, binding.sessionId)
+            return execute(await ctx.agents.resume({ resumeSessionId: binding.sessionId, agentOptions, setup, signal: runContext.signal }), cwd, binding.sessionId, workspace)
           }
           const sessionId = `xbot-a2a-${randomUUID()}`
-          return execute(await ctx.agents.create({ sessionId, meta: { cwd, agentPreset: preset.id }, agentOptions, setup, signal: runContext.signal }), cwd, sessionId, () => save(cwd, sessionId, preset.id))
+          return execute(await ctx.agents.create({ sessionId, meta: { cwd, agentPreset: preset.id }, agentOptions, setup, signal: runContext.signal }), cwd, sessionId, workspace, () => save(cwd, sessionId, preset.id))
         })
       },
     },
@@ -202,6 +264,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
   installWorkspaceSettings(ctx, config)
   ctx.effect(() => {
     let bridge: A2ABridge | undefined
+    let harness: HarnessContext | undefined
     let callback: OAuthCallbackServer | undefined
     let callbackTimer: ReturnType<typeof setTimeout> | undefined
     let release: (() => Promise<void>) | undefined
@@ -234,7 +297,8 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
         callbackTimer.unref()
       }
       prepared.config.oauth.authorizationCompleted = async () => { closeCallback() }
-      bridge = createBridge(createNativeHarnessContext(ctx, config, { sessionDirectory: join(prepared.directory, 'sessions') }), prepared.config)
+      harness = createNativeHarnessContext(ctx, config, { sessionDirectory: join(prepared.directory, 'sessions') })
+      bridge = createBridge(harness, prepared.config)
       console.info(`[${name}] loaded; connecting to platform ${prepared.config.gatewayUrl}`)
       await bridge.start()
     })().catch(async (error: unknown) => {
@@ -247,9 +311,20 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     return async () => {
       disposed = true
       await start.catch(() => undefined)
-      await bridge?.stop()
-      closeCallback()
-      await release?.()
+      try {
+        await bridge?.stop()
+      } finally {
+        try {
+          await harness?.dispose?.()
+        } finally {
+          // A failed persistence close must not strand this live process's
+          // profile lock after all retained handles have drained their teardown.
+          closeCallback()
+          const unlock = release
+          release = undefined
+          await unlock?.()
+        }
+      }
     }
   })
 }

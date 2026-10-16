@@ -24,6 +24,12 @@ window.__ModuleLoader__.load({
       )
     const modelKey = (provider, model) =>
       provider && model ? JSON.stringify([provider, model]) : ''
+    const directoryKey = (path) => {
+      const value = path ?? ''
+      return /^[A-Za-z]:[\\/]|^[\\/]{2}/u.test(value)
+        ? value.replaceAll('\\', '/').replace(/\/+$/u, '').toLowerCase()
+        : value.replace(/\/+$/u, '') || '/'
+    }
 
     function ConfigurationPage({
       form,
@@ -93,7 +99,9 @@ window.__ModuleLoader__.load({
         (item) => item.value === catalogs.permissions.defaultPreset,
       )
       const project = projects.items.find(
-        (item) => item.path === value.workingDirectory,
+        (item) =>
+          value.workingDirectory &&
+          directoryKey(item.path) === directoryKey(value.workingDirectory),
       )
       const id = React.useId()
 
@@ -108,7 +116,7 @@ window.__ModuleLoader__.load({
           if (mounted.current)
             setNotice({
               error: true,
-              text: '无法打开文件夹选择器，请填写本机已有文件夹的完整路径，或选择已有项目。',
+              text: '无法打开文件夹选择器，请填写本机目录的完整路径，或选择已有工作区。',
             })
         } finally {
           if (mounted.current) setBusy(null)
@@ -135,7 +143,7 @@ window.__ModuleLoader__.load({
             setDraft(null)
             setNotice({
               error: false,
-              text: '任务配置已保存。目录或 Agent 预设改变后请在平台开启新对话；模型用于后续任务。',
+              text: '任务配置已保存，新平台对话将使用此工作区、Agent 预设和默认模型。已有会话保留原工作区，在 DSH 中继续查看和操作。',
             })
           } else {
             setNotice({
@@ -165,18 +173,24 @@ window.__ModuleLoader__.load({
         h(
           'p',
           { style: muted },
-          '平台下达的任务使用这里选择的项目、Agent 预设和模型。工具由 Harness 预设提供，文件夹选择不会增加执行权限。',
+          '平台任务会话保存在 DSH 左侧的工作区中。工作区就是任务实际执行的项目目录，任务结束后会话仍然保留。',
         ),
-        h('label', { htmlFor: `${id}-project` }, '已有项目'),
+        h('label', { htmlFor: `${id}-project` }, '工作区（项目目录）'),
         h(
           'select',
           {
             id: `${id}-project`,
-            'aria-label': '已有项目',
-            value: project?.workspaceId ?? '',
+            'aria-label': '工作区',
+            value:
+              project?.workspaceId ??
+              (value.workingDirectory ? '__custom__' : ''),
             disabled: disabled || projects.phase !== 'ready',
             style: selectStyle,
             onChange: (event) => {
+              if (!event.target.value) {
+                update({ workingDirectory: '' })
+                return
+              }
               const item = projects.items.find(
                 (entry) => entry.workspaceId === event.target.value,
               )
@@ -186,8 +200,15 @@ window.__ModuleLoader__.load({
           h(
             'option',
             { value: '' },
-            '选择 Harness 中的项目，或在下方选择文件夹',
+            '使用 Harness 默认目录',
           ),
+          value.workingDirectory && !project
+            ? h(
+                'option',
+                { value: '__custom__' },
+                `所选目录 · ${value.workingDirectory}`,
+              )
+            : null,
           projects.items.map((item) =>
             h(
               'option',
@@ -196,7 +217,6 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
-        h('label', { htmlFor: `${id}-directory` }, '工作目录'),
         h(
           'div',
           {
@@ -212,11 +232,12 @@ window.__ModuleLoader__.load({
             { style: { flex: '1 1 300px', minWidth: 0, display: 'grid' } },
             h(Input, {
               id: `${id}-directory`,
+              'aria-label': '工作区目录',
               value: value.workingDirectory,
               onChange: (event) =>
                 update({ workingDirectory: event.target.value }),
               disabled,
-              placeholder: '留空跟随 Harness 默认目录，或填写完整文件夹路径',
+              placeholder: '选择文件夹或输入完整目录路径；留空使用 Harness 默认目录',
               autoComplete: 'off',
               spellCheck: false,
               style: { width: '100%' },
@@ -232,8 +253,13 @@ window.__ModuleLoader__.load({
           'p',
           { style: { ...muted, fontSize: 12, overflowWrap: 'anywhere' } },
           saved.workingDirectory
-            ? `已保存：${saved.workingDirectory}`
-            : '尚未指定，当前沿用 Harness 默认工作目录。',
+            ? `已保存的工作区目录：${saved.workingDirectory}`
+            : '当前使用 Harness 默认目录，它不跟随左侧临时选中的工作区。',
+        ),
+        h(
+          'p',
+          { style: muted },
+          '选择已有工作区或选择文件夹会设置同一个目录。新目录会在首次任务时加入左侧工作区。更换目录后，请在平台开启新对话。',
         ),
         h('label', { htmlFor: `${id}-preset` }, 'Agent 预设（工具集）'),
         h(
@@ -327,7 +353,7 @@ window.__ModuleLoader__.load({
         h(
           'p',
           { style: muted },
-          '添加模型和密钥：Harness 设置 → 模型。这里仅选择已配置的模型。',
+          '此处选择新会话的默认模型。已有会话可在 DSH 的模型选择器中调整。添加模型和密钥：Harness 设置 → 模型。',
         ),
         h(
           'div',

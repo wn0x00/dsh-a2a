@@ -1,4 +1,4 @@
 - insert:
     - id: xbot-a2a
       name: '@xbot/deepseek-harness-a2a'
-      inject: ['agents', 'agentDefaultModel']
+      inject: ['agents', 'agentDefaultModel', 'workspaceRegistry', 'sessions']

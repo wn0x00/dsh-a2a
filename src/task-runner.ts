@@ -89,7 +89,7 @@ export class TaskRunner {
     await Promise.allSettled([...this.pending])
     // A timeout reports failure promptly, but the native Agent can still be
     // cancelling tools and flushing session history. Keep the profile locked
-    // until that execution has actually disposed its Harness handle.
+    // until execution drains; plugin cleanup then closes its retained handles.
     await Promise.allSettled([...this.executions])
     this.active.clear()
   }
