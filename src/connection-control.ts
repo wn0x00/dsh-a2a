@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-api-gateway'
 import {
   Remote,
   RemoteError,
@@ -10,6 +11,7 @@ import {
   ConnectionActionError,
   type ConnectionSnapshot,
 } from './connection-state.js'
+import type { PluginUpdater, PluginUpdateSnapshot } from './plugin-update.js'
 
 export type ConnectionControlAction =
   | 'connect'
@@ -18,6 +20,7 @@ export type ConnectionControlAction =
 export type ConnectionControl = {
   status(): ConnectionSnapshot
   act(action: ConnectionControlAction): Promise<void>
+  updater?(): PluginUpdater | undefined
 }
 
 /** Management calls belong to the local Host owner, never remote task agents. */
@@ -40,8 +43,9 @@ export class ConnectionController extends TypertRemoteService {
   }
 
   @Remote
-  status(): ConnectionSnapshot {
+  status(signal?: AbortSignal): ConnectionSnapshot {
     this.requireOwner()
+    signal?.throwIfAborted()
     return this.control.status()
   }
 
@@ -58,6 +62,75 @@ export class ConnectionController extends TypertRemoteService {
   @Remote
   async cancelAuthorization(): Promise<ConnectionSnapshot> {
     return this.perform('cancelPendingAuthorization')
+  }
+
+  @Remote
+  updateStatus(signal?: AbortSignal): PluginUpdateSnapshot {
+    this.requireOwner()
+    signal?.throwIfAborted()
+    const updater = this.getUpdater('updateStatus')
+    try {
+      return updater.status()
+    } catch {
+      throw this.updateFailure()
+    }
+  }
+
+  @Remote
+  async checkUpdate(): Promise<PluginUpdateSnapshot> {
+    return this.performUpdate('checkUpdate', (updater) => updater.check())
+  }
+
+  @Remote
+  async installUpdate(expectedVersion: string): Promise<PluginUpdateSnapshot> {
+    return this.performUpdate('installUpdate', (updater) => updater.install(expectedVersion))
+  }
+
+  @Remote
+  async setUpdateCredential(token: string): Promise<PluginUpdateSnapshot> {
+    return this.performUpdate('setUpdateCredential', (updater) => updater.setCredential(token))
+  }
+
+  @Remote
+  async clearUpdateCredential(): Promise<PluginUpdateSnapshot> {
+    return this.performUpdate('clearUpdateCredential', (updater) => updater.clearCredential())
+  }
+
+  private getUpdater(method: string): PluginUpdater {
+    try {
+      const updater = this.control.updater?.()
+      if (updater) return updater
+    } catch {
+      // The factory may depend on Host startup; its diagnostics stay local.
+    }
+    throw new RemoteError(
+      'gateway/service-unavailable',
+      'Plugin updates are not available in this Host. Try again after startup.',
+      { endpoint: `xbotA2a/${method}` },
+    )
+  }
+
+  private updateFailure(): RemoteError {
+    return new RemoteError(
+      'gateway/internal',
+      'The plugin update operation could not be completed. Check its status before retrying.',
+      {},
+    )
+  }
+
+  private async performUpdate(
+    method: 'checkUpdate' | 'installUpdate' | 'setUpdateCredential' | 'clearUpdateCredential',
+    action: (updater: PluginUpdater) => Promise<PluginUpdateSnapshot>,
+  ): Promise<PluginUpdateSnapshot> {
+    this.requireOwner()
+    const updater = this.getUpdater(method)
+    try {
+      // The Host installer owns its lifetime, including replacement of this
+      // plugin. A Client cancellation must not abort an accepted installation.
+      return await action(updater)
+    } catch {
+      throw this.updateFailure()
+    }
   }
 
   private async perform(

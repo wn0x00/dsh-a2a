@@ -5,6 +5,7 @@ export type ConnectionPhase =
   | 'connecting'
   | 'connected'
   | 'reconnecting'
+  | 'updating'
   | 'authorization_required'
   | 'error'
   | 'stopped'

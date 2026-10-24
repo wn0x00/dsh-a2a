@@ -3,7 +3,7 @@
   "id": "com.xbot.deepseek-harness-a2a",
   "name": "Xbot A2A Device Bridge",
   "description": "Connect the native Harness Agent to the platform A2A endpoint through an outbound relay.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "entry": "dist/index.js",
   "cli": "dist/cli.js",
   "loader": {

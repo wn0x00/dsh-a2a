@@ -26,10 +26,20 @@ validates the host-side workspace and execution configuration.
 through the host's public Typert service API. Each operation requires the local
 host owner's principal. The host registers the strict descriptors from
 `src/connection-contract.ts`; the browser mounts the same contract using the
-host's Zod module. `src/connection-state.ts` defines the public status projection:
+host's Zod module. Mounting the contribution does not grant Cordis namespace
+access: the settings page is registered in a child scope that explicitly injects
+`remote.xbotA2a` after `$mount` completes. Loading it in the outer injection list
+would wait for the namespace before the plugin can mount it. The child scope is
+disposed before the contract is unmounted. Status reads use Typert transport
+cancellation; signals do not become wire arguments. Strict snapshot codecs
+validate both host output and client input. `src/connection-state.ts` defines the public status projection:
 connection phase, device identity, task count and timestamps, without tokens,
 PKCE state or stored credentials. The settings page reads live bridge state;
-saved configuration alone is not proof of a working connection.
+saved configuration alone is not proof of a working connection. If local status
+is unavailable, management actions are hidden and retained snapshots are marked
+stale. Recovery instructions distinguish local service availability from
+platform authorization. Read timeouts abort the carrier; polling and manual
+refresh share a single request.
 
 Reauthorization pauses an idle relay without clearing its saved credentials.
 Cancellation, denial, timeout or browser failure clears only pending consent and
@@ -42,6 +52,29 @@ Host protocol and Cordis packages are declared as peers and are also available a
 development dependencies for contract checks. `src/cli.ts` is an independent
 transport diagnostic with an echo handler; it does not activate a Harness plugin
 or perform native Agent execution.
+
+## Plugin updates
+
+`src/plugin-update.ts` reads the fixed private Gitea Generic package source. It
+uses a separately protected read-only package credential and issues only GET
+requests to the configured Gitea origin; redirects and arbitrary download URLs
+are rejected. Registry names, versions and manifest fields are validated before
+selecting the highest published version. Installation binds the confirmation to
+that exact version and verifies size, SHA-256 and the archive's package identity.
+
+The owner-only `xbotA2a` update methods return a strict public snapshot, never
+credentials or raw upstream errors. The write-only credential methods clear or
+replace only the updater's credential. Updates remain usable when the platform's
+authorization metadata endpoint is unavailable. The UI has separate controls for
+checking a release and explicitly installing it.
+
+The adapter acquires an idle-task lock, pauses incoming work and fences connection
+actions while installation proceeds. The public Harness `pluginManager.installBundle`
+owns the actual package operation. Plugin cleanup must not cancel or await that
+operation: hot replacement may be waiting for this same cleanup. A private,
+atomic receipt and native package inventory reconcile an interrupted result.
+Unknown outcomes never trigger another install automatically. Verified local
+archives remain available for the host package manager's file dependencies.
 
 ## Authorization and transport
 
@@ -94,6 +127,10 @@ is supplied. See [README](../README.md) for user installation and operation.
 Captures: [connected](assets/settings-connected.png),
 [awaiting authorization](assets/settings-authorizing.png),
 [reauthorization confirmation](assets/settings-reauthorize.png), and
-[mobile layout](assets/settings-mobile.png). These use the real settings
+[mobile layout](assets/settings-mobile.png),
+[status recovery](assets/settings-status-unavailable.png),
+[plugin updates](assets/settings-update.png),
+[restart required](assets/settings-update-restart.png), and
+[update mobile layout](assets/settings-update-mobile.png). These use the real settings
 components with controlled RPC and UI-primitives fixtures. They do not represent
 a foreground interaction test inside the Windows desktop host.

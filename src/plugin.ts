@@ -257,6 +257,19 @@ export class A2ABridge {
     await this.oauth.logout()
   }
 
+  /** Stop accepting work only when idle; preserve credentials for restart. */
+  async pauseForUpdate(): Promise<void> {
+    if (this.disposed) throw new ConnectionActionError('unavailable')
+    if (this.connecting || this.completing || this.runner.activeTaskIds().length
+      || ['starting', 'connecting', 'authorizing'].includes(this.phase)) {
+      throw new ConnectionActionError('busy')
+    }
+    // No await between the idle check and stopping the poll carrier: a task
+    // cannot enter dispatch after this check while an update acquires its lock.
+    this.phase = 'stopped'
+    await this.stopPolling()
+  }
+
   async stop(): Promise<void> {
     this.disposed = true
     clearTimeout(this.authorizationTimer)
