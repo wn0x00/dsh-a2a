@@ -1,3 +1,7 @@
 dist/
 node_modules/
+release/
+*.tgz
 .env
+.env.*
+!.env.example

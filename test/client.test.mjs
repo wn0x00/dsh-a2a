@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
 import React from 'react'
+import * as Zod from 'zod'
 import { act, create } from 'react-test-renderer'
 
 const source = await readFile(
@@ -21,6 +22,9 @@ async function renderConfiguration(t, options = {}) {
   }
   const listeners = new Set()
   const writes = []
+  const connectionCalls = []
+  let mountedContract = false
+  let connectionSnapshot = { phase: 'authorization_required', notice: 'none', gatewayUrl: 'https://agent.guanzhu.me', deviceId: 'test-device', deviceName: 'Office Harness', activeTasks: 0, pendingExpiresAt: null, lastConnectedAt: null, lastContactAt: null, canConnect: true, canReauthorize: true, canCancelAuthorization: false, ...options.connection }
   let picked = 0
   let registered
   const registrations = []
@@ -51,12 +55,14 @@ async function renderConfiguration(t, options = {}) {
     },
   }
   const sandbox = {
+    setTimeout, clearTimeout,
     window: {
       __ModuleLoader__: {
         load: ({ id, factory }) => {
           assert.equal(id, '@xbot/deepseek-harness-a2a')
           client = factory((name) => {
             if (name === 'react') return React
+            if (name === 'zod') return Zod
             assert.equal(name, '@deepseek-ai/dsh-client-ui-primitives')
             return {
               Button: (props) => React.createElement('button', props),
@@ -79,7 +85,7 @@ async function renderConfiguration(t, options = {}) {
       },
     ],
   }
-  const dispose = client.apply({
+  const dispose = await client.apply({
     on: (_event, listener) => {
       remoteListeners.add(listener)
       return () => remoteListeners.delete(listener)
@@ -97,6 +103,20 @@ async function renderConfiguration(t, options = {}) {
       },
     },
     remote: {
+      $mount: async (contract) => {
+        assert.deepEqual(Array.from(contract.descriptors, (entry) => entry.method), ['status', 'connect', 'reauthorize', 'cancelAuthorization'])
+        mountedContract = true
+        return async () => { mountedContract = false }
+      },
+      xbotA2a: {
+        status: async () => options.statusError || !mountedContract ? { ok: false } : { ok: true, value: connectionSnapshot },
+        ...Object.fromEntries(['connect', 'reauthorize', 'cancelAuthorization'].map((action) => [action, async () => {
+          connectionCalls.push(action)
+          if (options.actionError) return { ok: false, error: { message: 'Bearer secret must not render' } }
+          connectionSnapshot = { ...connectionSnapshot, phase: action === 'cancelAuthorization' ? 'connected' : 'authorizing', canConnect: false, canReauthorize: false, canCancelAuthorization: action !== 'cancelAuthorization' }
+          return { ok: true, value: connectionSnapshot }
+        }])),
+      },
       agentPresets: {
         list: async () =>
           options.catalogError
@@ -196,13 +216,24 @@ async function renderConfiguration(t, options = {}) {
     await act(async () => {
       view.unmount()
     })
-    dispose()
+    await dispose()
     assert.equal(listeners.size, 0)
     assert.equal(remoteListeners.size, 0)
   })
   return {
-    view,
+    get view() { return view },
     writes,
+    connectionCalls,
+    contractMounted: () => mountedContract,
+    reopen: async () => {
+      await act(async () => { view.unmount() })
+      assert.equal(mountedContract, true)
+      await act(async () => { view = create(React.createElement(registered.component, registered.metadata.inject())) })
+    },
+    updateConnection: async (next) => {
+      connectionSnapshot = { ...connectionSnapshot, ...next }
+      await act(async () => { for (const listener of remoteListeners) await listener() })
+    },
     registrations,
     publish,
     picked: () => picked,
@@ -421,7 +452,7 @@ test('unavailable catalogs are explained without hiding directory configuration'
 })
 
 
-test('identity edits save bounded fields and connecting is an explicit revisioned request', async (t) => {
+test('identity edits save bounded fields and connecting uses the live owner control', async (t) => {
   const page = await renderConfiguration(t)
   assert.equal(page.button('连接平台').props.disabled, false)
   await act(async () => {
@@ -435,9 +466,57 @@ test('identity edits save bounded fields and connecting is an explicit revisione
     { op: 'set', path: ['deviceDescription'], value: 'Local automation' },
   ])
   await act(async () => { await page.button('连接平台').props.onClick() })
-  assert.equal(page.writes[1].revision, 4)
-  assert.deepEqual(page.writes[1].ops[0].path, ['connectionRequest'])
-  assert.equal(typeof page.writes[1].ops[0].value, 'string')
-  assert.match(page.text(), /已请求连接/)
+  assert.equal(page.writes.length, 1)
+  assert.deepEqual(page.connectionCalls, ['connect'])
+  assert.match(page.text(), /等待浏览器授权/)
   assert.doesNotMatch(page.text(), /连接成功/)
+})
+
+test('connected status supports confirmed reauthorization and cancellation even with unsaved edits', async (t) => {
+  const page = await renderConfiguration(t, { connection: { phase: 'connected', canConnect: false, lastContactAt: Date.now() } })
+  assert.match(page.text(), /已连接/)
+  assert.match(page.text(), /最近联络/)
+  await act(async () => { page.button('重新授权').props.onClick() })
+  assert.equal(page.connectionCalls.length, 0)
+  assert.match(page.text(), /请使用原平台账号/)
+  await act(async () => { await page.button('打开浏览器授权').props.onClick() })
+  assert.deepEqual(page.connectionCalls, ['reauthorize'])
+  assert.match(page.text(), /等待浏览器授权/)
+  await page.edit('C:\\Projects\\unsaved')
+  assert.equal(page.button('取消本次授权').props.disabled, false)
+  await act(async () => { await page.button('取消本次授权').props.onClick() })
+  assert.deepEqual(page.connectionCalls, ['reauthorize', 'cancelAuthorization'])
+})
+
+test('active work prevents reauthorization and connection errors never display a stale success', async (t) => {
+  const page = await renderConfiguration(t, { connection: { phase: 'connected', activeTasks: 2, canReauthorize: false } })
+  assert.equal(page.button('重新授权').props.disabled, true)
+  assert.match(page.text(), /2 个任务执行中/)
+  await page.updateConnection({ phase: 'authorization_required', canConnect: true, activeTasks: 0 })
+  assert.match(page.text(), /需要授权/)
+  assert.doesNotMatch(page.text(), /此设备已授权/)
+})
+
+test('RPC failures show an actionable message without rendering server secrets', async (t) => {
+  const page = await renderConfiguration(t, { actionError: true })
+  await act(async () => { await page.button('连接平台').props.onClick() })
+  assert.match(page.text(), /未能完成操作/)
+  assert.doesNotMatch(page.text(), /Bearer|secret/)
+  assert.equal(page.button('连接平台').props.disabled, false)
+})
+
+test('settings close and reopen leaves the plugin RPC contract mounted', async (t) => {
+  const page = await renderConfiguration(t)
+  await page.reopen()
+  assert.equal(page.contractMounted(), true)
+  assert.match(page.text(), /需要授权/)
+  await act(async () => { await page.button('连接平台').props.onClick() })
+  assert.deepEqual(page.connectionCalls, ['connect'])
+})
+
+test('status failure and readonly pending authorization cannot trigger connection actions', async (t) => {
+  const page = await renderConfiguration(t, { statusError: true })
+  assert.match(page.text(), /无法读取状态/)
+  const readonly = await renderConfiguration(t, { snapshot: { writable: false }, connection: { phase: 'authorizing', canCancelAuthorization: true } })
+  assert.equal(readonly.button('取消本次授权').props.disabled, true)
 })

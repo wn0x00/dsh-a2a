@@ -1,7 +1,7 @@
 {
   "name": "@xbot/deepseek-harness-a2a",
-  "version": "0.1.8",
-  "private": false,
+  "version": "0.1.9",
+  "private": true,
   "description": "A2A device bridge plugin for DeepSeek Harness on Windows",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,17 +17,22 @@
   },
   "engines": {
     "node": ">=22.19.0",
-    "dsh": ">=0.2.0-rc.2 <0.3.0"
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
   },
   "devDependencies": {
     "@deepseek-ai/schemastery": "~3.18.4",
     "@types/node": "^20.0.0",
     "react": "18.3.1",
     "react-test-renderer": "18.3.1",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
+    "esbuild": "0.28.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/schemastery": "~3.18.4"
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/schemastery": {
@@ -59,5 +64,13 @@
         "@deepseek-ai/dsh-client-ui-primitives"
       ]
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitea.guanzhu.me/xbot/deepseek-harness-a2a.git"
+  },
+  "homepage": "https://gitea.guanzhu.me/xbot/deepseek-harness-a2a",
+  "dependencies": {
+    "zod": "4.4.3"
   }
 }

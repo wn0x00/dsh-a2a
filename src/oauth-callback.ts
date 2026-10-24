@@ -6,7 +6,7 @@ type Outcome = 'connected' | 'declined' | 'invalid' | 'failed' | 'notFound'
 const copy = {
   zh: {
     connected: ['连接成功', '此设备已连接到平台，可以接收所选 Agent 的任务。'],
-    declined: ['已取消连接', '没有连接此设备。需要时可在 Harness 设置中重新连接。'],
+    declined: ['本次授权已取消', '请返回 Harness 查看当前连接状态；已有授权仍可用时会恢复原连接。'],
     invalid: ['授权链接已失效', '此链接不属于当前连接请求，或已经使用。请回到 Harness 重新连接。'],
     failed: ['连接未完成', '未能完成本机连接。请检查网络，然后在 Harness 设置中重新连接。'],
     notFound: ['找不到此页面', '此本机地址只用于完成平台授权。'],
@@ -18,7 +18,7 @@ const copy = {
   },
   en: {
     connected: ['Connected', 'This device is connected to the platform and can receive tasks from selected Agents.'],
-    declined: ['Connection canceled', 'This device was not connected. You can connect again in Harness settings.'],
+    declined: ['Authorization canceled', 'Return to Harness to check the connection. A previous authorization is restored if it is still valid.'],
     invalid: ['Authorization link unavailable', 'This link does not match the current request or has already been used. Connect again from Harness.'],
     failed: ['Connection incomplete', 'The local connection could not be completed. Check your network and connect again in Harness settings.'],
     notFound: ['Page not found', 'This local address is only used to complete platform authorization.'],

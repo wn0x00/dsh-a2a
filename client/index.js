@@ -1,11 +1,22 @@
+import { connectionContribution } from '../src/connection-contract.ts'
+import { createConnectionPanel } from './connection-panel.js'
+
 // DSH supplies React, its configuration store and native project/model catalogs.
 window.__ModuleLoader__.load({
   id: '@xbot/deepseek-harness-a2a',
   factory: (require) => {
     const React = require('react')
     const { Button, Input } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const ConnectionPanel = createConnectionPanel(React, Button)
     const h = React.createElement
-    const fields = ['deviceName', 'deviceDescription', 'workingDirectory', 'agentPreset', 'provider', 'model']
+    const fields = [
+      'deviceName',
+      'deviceDescription',
+      'workingDirectory',
+      'agentPreset',
+      'provider',
+      'model',
+    ]
     const muted = { margin: 0, opacity: 0.72, lineHeight: 1.6 }
     const selectStyle = {
       width: '100%',
@@ -37,6 +48,7 @@ window.__ModuleLoader__.load({
       pickDirectory,
       loadCatalogs,
       subscribeCatalogs,
+      connection,
     }) {
       const snapshot = React.useSyncExternalStore(
         form.subscribe,
@@ -161,26 +173,6 @@ window.__ModuleLoader__.load({
           if (mounted.current) setBusy(null)
         }
       }
-      async function connect() {
-        if (!editable || busy || changed) return
-        setBusy('connect')
-        setNotice(null)
-        try {
-          const accepted = await form.mutate([
-            { op: 'set', path: ['connectionRequest'], value: `${Date.now()}-${Math.random().toString(36).slice(2)}` },
-          ], snapshot.revision)
-          if (mounted.current) setNotice({
-            error: !accepted,
-            text: accepted
-              ? '已请求连接。需要授权时会打开浏览器；完成后可回到平台刷新本地智能体。若未打开，请检查 Harness 日志后重试。'
-              : '连接请求未保存，请检查 Harness 连接后重试。',
-          })
-        } catch {
-          if (mounted.current) setNotice({ error: true, text: '无法请求连接，请检查 Harness 连接后重试。' })
-        } finally {
-          if (mounted.current) setBusy(null)
-        }
-      }
       const disabled = !editable || busy !== null
       return h(
         'form',
@@ -190,247 +182,284 @@ window.__ModuleLoader__.load({
           style: { display: 'grid', gap: 12, maxWidth: 680, minWidth: 0 },
         },
         h('h3', { style: { margin: 0, fontSize: 16 } }, 'Xbot 平台任务'),
-        h('label', { htmlFor: `${id}-name` }, '设备名称'),
-        h(Input, {
-          id: `${id}-name`, 'aria-label': '设备名称', value: value.deviceName,
-          maxLength: 200, disabled, placeholder: '留空使用 DeepSeek Harness（计算机名）',
-          onChange: (event) => update({ deviceName: event.target.value }),
+        h(ConnectionPanel, {
+          connection,
+          disabled: disabled || changed,
+          readOnly: !editable,
+          changed,
         }),
-        h('label', { htmlFor: `${id}-description` }, '设备描述（可选）'),
-        h('textarea', {
-          id: `${id}-description`, 'aria-label': '设备描述', value: value.deviceDescription,
-          maxLength: 1000, rows: 2, disabled, style: { ...selectStyle, resize: 'vertical' },
-          placeholder: '说明此设备适合处理的任务，平台子 Agent 列表和 A2A Card 会展示。',
-          onChange: (event) => update({ deviceDescription: event.target.value }),
-        }),
-        h('div', null,
-          h(Button, { type: 'button', variant: 'outline', disabled: disabled || changed, onClick: connect },
-            busy === 'connect' ? '正在请求…' : '连接平台'),
-          h('p', { style: { ...muted, marginTop: 8, fontSize: 12 } },
-            changed ? '先保存配置，再连接平台。' : '首次连接、授权过期或在平台断开后，点击此处授权。已连接时会保留现有连接。'),
-        ),
         h(
-          'p',
-          { style: muted },
-          '平台任务会话保存在 DSH 左侧的工作区中。工作区就是任务实际执行的项目目录，任务结束后会话仍然保留。',
-        ),
-        h('label', { htmlFor: `${id}-project` }, '工作区（项目目录）'),
-        h(
-          'select',
+          'section',
           {
-            id: `${id}-project`,
-            'aria-label': '工作区',
-            value:
-              project?.workspaceId ??
-              (value.workingDirectory ? '__custom__' : ''),
-            disabled: disabled || projects.phase !== 'ready',
-            style: selectStyle,
-            onChange: (event) => {
-              if (!event.target.value) {
-                update({ workingDirectory: '' })
-                return
-              }
-              const item = projects.items.find(
-                (entry) => entry.workspaceId === event.target.value,
-              )
-              if (item) update({ workingDirectory: item.path })
+            'aria-label': '设备信息',
+            style: { display: 'grid', gap: 8, padding: '8px 0' },
+          },
+          h('h4', { style: { margin: '0 0 4px', fontSize: 14 } }, '设备信息'),
+          h('label', { htmlFor: `${id}-name` }, '设备名称'),
+          h(Input, {
+            id: `${id}-name`,
+            'aria-label': '设备名称',
+            value: value.deviceName,
+            maxLength: 200,
+            disabled,
+            placeholder: '留空使用 DeepSeek Harness（计算机名）',
+            onChange: (event) => update({ deviceName: event.target.value }),
+          }),
+          h('label', { htmlFor: `${id}-description` }, '设备描述（可选）'),
+          h('textarea', {
+            id: `${id}-description`,
+            'aria-label': '设备描述',
+            value: value.deviceDescription,
+            maxLength: 1000,
+            rows: 2,
+            disabled,
+            style: { ...selectStyle, resize: 'vertical' },
+            placeholder:
+              '说明此设备适合处理的任务，平台子 Agent 列表和 A2A Card 会展示。',
+            onChange: (event) =>
+              update({ deviceDescription: event.target.value }),
+          }),
+        ),
+        h(
+          'section',
+          {
+            'aria-label': '任务运行',
+            style: {
+              display: 'grid',
+              gap: 8,
+              paddingTop: 16,
+              borderTop: '1px solid var(--dsw-alias-border-l3)',
             },
           },
+          h('h4', { style: { margin: '0 0 4px', fontSize: 14 } }, '任务运行'),
           h(
-            'option',
-            { value: '' },
-            '使用 Harness 默认目录',
+            'p',
+            { style: { ...muted, fontSize: 12 } },
+            '平台任务会话保存在 DSH 左侧的工作区中。工作区就是任务实际执行的项目目录，任务结束后会话仍然保留。',
           ),
-          value.workingDirectory && !project
-            ? h(
+          h('label', { htmlFor: `${id}-project` }, '工作区（项目目录）'),
+          h(
+            'select',
+            {
+              id: `${id}-project`,
+              'aria-label': '工作区',
+              value:
+                project?.workspaceId ??
+                (value.workingDirectory ? '__custom__' : ''),
+              disabled: disabled || projects.phase !== 'ready',
+              style: selectStyle,
+              onChange: (event) => {
+                if (!event.target.value) {
+                  update({ workingDirectory: '' })
+                  return
+                }
+                const item = projects.items.find(
+                  (entry) => entry.workspaceId === event.target.value,
+                )
+                if (item) update({ workingDirectory: item.path })
+              },
+            },
+            h('option', { value: '' }, '使用 Harness 默认目录'),
+            value.workingDirectory && !project
+              ? h(
+                  'option',
+                  { value: '__custom__' },
+                  `所选目录 · ${value.workingDirectory}`,
+                )
+              : null,
+            projects.items.map((item) =>
+              h(
                 'option',
-                { value: '__custom__' },
-                `所选目录 · ${value.workingDirectory}`,
-              )
-            : null,
-          projects.items.map((item) =>
-            h(
-              'option',
-              { key: item.workspaceId, value: item.workspaceId },
-              `${item.title} · ${item.path}`,
+                { key: item.workspaceId, value: item.workspaceId },
+                `${item.title} · ${item.path}`,
+              ),
             ),
           ),
-        ),
-        h(
-          'div',
-          {
-            style: {
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: 8,
-              alignItems: 'center',
-            },
-          },
           h(
             'div',
-            { style: { flex: '1 1 300px', minWidth: 0, display: 'grid' } },
-            h(Input, {
-              id: `${id}-directory`,
-              'aria-label': '工作区目录',
-              value: value.workingDirectory,
-              onChange: (event) =>
-                update({ workingDirectory: event.target.value }),
-              disabled,
-              placeholder: '选择文件夹或输入完整目录路径；留空使用 Harness 默认目录',
-              autoComplete: 'off',
-              spellCheck: false,
-              style: { width: '100%' },
-            }),
-          ),
-          h(
-            Button,
-            { type: 'button', variant: 'outline', disabled, onClick: choose },
-            busy === 'pick' ? '正在选择…' : '选择文件夹',
-          ),
-        ),
-        h(
-          'p',
-          { style: { ...muted, fontSize: 12, overflowWrap: 'anywhere' } },
-          saved.workingDirectory
-            ? `已保存的工作区目录：${saved.workingDirectory}`
-            : '当前使用 Harness 默认目录，它不跟随左侧临时选中的工作区。',
-        ),
-        h(
-          'p',
-          { style: muted },
-          '选择已有工作区或选择文件夹会设置同一个目录。新目录会在首次任务时加入左侧工作区。更换目录后，请在平台开启新对话。',
-        ),
-        h('label', { htmlFor: `${id}-preset` }, 'Agent 预设（工具集）'),
-        h(
-          'select',
-          {
-            id: `${id}-preset`,
-            'aria-label': 'Agent 预设',
-            value: value.agentPreset,
-            disabled: disabled || !catalogs.presets,
-            style: selectStyle,
-            onChange: (event) => update({ agentPreset: event.target.value }),
-          },
-          h(
-            'option',
-            { value: '' },
-            `跟随 Harness 默认${defaultPreset ? ` · ${defaultPreset.name ?? defaultPreset.id}` : ''}`,
-          ),
-          value.agentPreset &&
-            !presets.some((item) => item.id === value.agentPreset)
-            ? h(
-                'option',
-                { value: value.agentPreset, disabled: true },
-                `不可用：${value.agentPreset}`,
-              )
-            : null,
-          presets.map((item) =>
+            {
+              style: {
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                alignItems: 'center',
+              },
+            },
             h(
-              'option',
-              { key: item.id, value: item.id, disabled: Boolean(item.broken) },
-              `${item.name ?? item.id}${item.broken ? '（不可用）' : ''}`,
+              'div',
+              { style: { flex: '1 1 300px', minWidth: 0, display: 'grid' } },
+              h(Input, {
+                id: `${id}-directory`,
+                'aria-label': '工作区目录',
+                value: value.workingDirectory,
+                onChange: (event) =>
+                  update({ workingDirectory: event.target.value }),
+                disabled,
+                placeholder:
+                  '选择文件夹或输入完整目录路径；留空使用 Harness 默认目录',
+                autoComplete: 'off',
+                spellCheck: false,
+                style: { width: '100%' },
+              }),
+            ),
+            h(
+              Button,
+              { type: 'button', variant: 'outline', disabled, onClick: choose },
+              busy === 'pick' ? '正在选择…' : '选择文件夹',
             ),
           ),
-        ),
-        h(
-          'p',
-          { style: muted },
-          selectedPreset?.broken
-            ? `所选预设不可用：${selectedPreset.broken}`
-            : (selectedPreset?.description ??
-                '在 Harness 的 Agent 预设中配置工具。运行命令需要所选预设包含 Shell 工具。'),
-        ),
-        h('label', { htmlFor: `${id}-model` }, '模型'),
-        h(
-          'select',
-          {
-            id: `${id}-model`,
-            'aria-label': '模型',
-            value: modelSelection,
-            disabled: disabled || !catalogs.models,
-            style: selectStyle,
-            onChange: (event) => {
-              const [provider, model] = event.target.value
-                ? JSON.parse(event.target.value)
-                : ['', '']
-              update({ provider, model })
-            },
-          },
           h(
-            'option',
-            { value: '' },
-            `跟随 Harness 默认${catalogs.models?.default ? ` · ${catalogs.models.default.provider}/${catalogs.models.default.model}` : ''}`,
+            'p',
+            { style: { ...muted, fontSize: 12, overflowWrap: 'anywhere' } },
+            saved.workingDirectory
+              ? `已保存的工作区目录：${saved.workingDirectory}`
+              : '当前使用 Harness 默认目录，它不跟随左侧临时选中的工作区。',
           ),
-          modelSelection && !availableModel
-            ? h(
-                'option',
-                { value: modelSelection, disabled: true },
-                `不可用：${value.provider}/${value.model}`,
-              )
-            : null,
-          groups.map((group) =>
+          h(
+            'p',
+            { style: muted },
+            '选择已有工作区或选择文件夹会设置同一个目录。新目录会在首次任务时加入左侧工作区。更换目录后，请在平台开启新对话。',
+          ),
+          h('label', { htmlFor: `${id}-preset` }, 'Agent 预设（工具集）'),
+          h(
+            'select',
+            {
+              id: `${id}-preset`,
+              'aria-label': 'Agent 预设',
+              value: value.agentPreset,
+              disabled: disabled || !catalogs.presets,
+              style: selectStyle,
+              onChange: (event) => update({ agentPreset: event.target.value }),
+            },
             h(
-              'optgroup',
-              { key: group.id, label: group.name },
-              group.models.map((model) =>
-                h(
+              'option',
+              { value: '' },
+              `跟随 Harness 默认${defaultPreset ? ` · ${defaultPreset.name ?? defaultPreset.id}` : ''}`,
+            ),
+            value.agentPreset &&
+              !presets.some((item) => item.id === value.agentPreset)
+              ? h(
                   'option',
-                  { key: model.id, value: modelKey(group.id, model.id) },
-                  model.name ?? model.id,
+                  { value: value.agentPreset, disabled: true },
+                  `不可用：${value.agentPreset}`,
+                )
+              : null,
+            presets.map((item) =>
+              h(
+                'option',
+                {
+                  key: item.id,
+                  value: item.id,
+                  disabled: Boolean(item.broken),
+                },
+                `${item.name ?? item.id}${item.broken ? '（不可用）' : ''}`,
+              ),
+            ),
+          ),
+          h(
+            'p',
+            { style: muted },
+            selectedPreset?.broken
+              ? `所选预设不可用：${selectedPreset.broken}`
+              : (selectedPreset?.description ??
+                  '在 Harness 的 Agent 预设中配置工具。运行命令需要所选预设包含 Shell 工具。'),
+          ),
+          h('label', { htmlFor: `${id}-model` }, '模型'),
+          h(
+            'select',
+            {
+              id: `${id}-model`,
+              'aria-label': '模型',
+              value: modelSelection,
+              disabled: disabled || !catalogs.models,
+              style: selectStyle,
+              onChange: (event) => {
+                const [provider, model] = event.target.value
+                  ? JSON.parse(event.target.value)
+                  : ['', '']
+                update({ provider, model })
+              },
+            },
+            h(
+              'option',
+              { value: '' },
+              `跟随 Harness 默认${catalogs.models?.default ? ` · ${catalogs.models.default.provider}/${catalogs.models.default.model}` : ''}`,
+            ),
+            modelSelection && !availableModel
+              ? h(
+                  'option',
+                  { value: modelSelection, disabled: true },
+                  `不可用：${value.provider}/${value.model}`,
+                )
+              : null,
+            groups.map((group) =>
+              h(
+                'optgroup',
+                { key: group.id, label: group.name },
+                group.models.map((model) =>
+                  h(
+                    'option',
+                    { key: model.id, value: modelKey(group.id, model.id) },
+                    model.name ?? model.id,
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-        catalogs.models?.failures?.length
-          ? h(
-              'p',
-              { role: 'status', style: muted },
-              `部分模型服务暂不可用：${catalogs.models.failures.map((item) => item.name).join('、')}`,
-            )
-          : null,
-        h(
-          'p',
-          { style: muted },
-          '此处选择新会话的默认模型。已有会话可在 DSH 的模型选择器中调整。添加模型和密钥：Harness 设置 → 模型。',
-        ),
-        h(
-          'div',
-          {
-            style: {
-              borderTop: '1px solid var(--dsw-alias-border-l3)',
-              paddingTop: 12,
-            },
-          },
-          h('strong', null, '权限'),
-          h(
-            'p',
-            { style: muted },
-            permission
-              ? `新会话继承：${permission.name}（${permission.value}）`
-              : catalogs.permissions
-                ? `新会话继承：${catalogs.permissions.defaultPreset}`
-                : '正在读取 Harness 的权限默认值。',
-          ),
-          permission?.description
-            ? h('p', { style: muted }, permission.description)
+          catalogs.models?.failures?.length
+            ? h(
+                'p',
+                { role: 'status', style: muted },
+                `部分模型服务暂不可用：${catalogs.models.failures.map((item) => item.name).join('、')}`,
+              )
             : null,
           h(
             'p',
             { style: muted },
-            '在 Harness 设置 → 常规 → 权限中调整新会话默认值。已有会话保留原权限，需要确认的工具仍由 Harness 审批。插件不会自动放开权限。',
+            '此处选择新会话的默认模型。已有会话可在 DSH 的模型选择器中调整。添加模型和密钥：Harness 设置 → 模型。',
           ),
-        ),
-        catalogs.loading
-          ? h(
+          h(
+            'div',
+            {
+              style: {
+                borderTop: '1px solid var(--dsw-alias-border-l3)',
+                paddingTop: 12,
+              },
+            },
+            h('strong', null, '权限'),
+            h(
               'p',
-              { role: 'status', style: muted },
-              '正在读取 Harness 的预设、模型和权限…',
-            )
-          : null,
-        catalogs.errors?.length
-          ? h('p', { role: 'alert', style: muted }, catalogs.errors.join('；'))
-          : null,
+              { style: muted },
+              permission
+                ? `新会话继承：${permission.name}（${permission.value}）`
+                : catalogs.permissions
+                  ? `新会话继承：${catalogs.permissions.defaultPreset}`
+                  : '正在读取 Harness 的权限默认值。',
+            ),
+            permission?.description
+              ? h('p', { style: muted }, permission.description)
+              : null,
+            h(
+              'p',
+              { style: muted },
+              '在 Harness 设置 → 常规 → 权限中调整新会话默认值。已有会话保留原权限，需要确认的工具仍由 Harness 审批。插件不会自动放开权限。',
+            ),
+          ),
+          catalogs.loading
+            ? h(
+                'p',
+                { role: 'status', style: muted },
+                '正在读取 Harness 的预设、模型和权限…',
+              )
+            : null,
+          catalogs.errors?.length
+            ? h(
+                'p',
+                { role: 'alert', style: muted },
+                catalogs.errors.join('；'),
+              )
+            : null,
+        ),
         snapshot.status === 'loading'
           ? h('p', { role: 'status', style: muted }, '正在读取配置…')
           : !editable
@@ -491,9 +520,19 @@ window.__ModuleLoader__.load({
       'remote.agentPresets',
       'remote.permissionPresets',
     ]
-    function apply(ctx) {
+    async function apply(ctx) {
+      const unmountConnection = await ctx.remote.$mount(
+        connectionContribution(require('zod').z),
+      )
       const configForm = ctx.configForms.get('xbot-a2a')
       const actions = {
+        connection: {
+          status: () => ctx.remote.xbotA2a.status(),
+          connect: () => ctx.remote.xbotA2a.connect(),
+          reauthorize: () => ctx.remote.xbotA2a.reauthorize(),
+          cancelAuthorization: () => ctx.remote.xbotA2a.cancelAuthorization(),
+          subscribe: (refresh) => ctx.on('connection/reset', refresh),
+        },
         form: {
           subscribe: (listener) => configForm.subscribe(listener),
           getSnapshot: () => configForm.getSnapshot(),
@@ -568,7 +607,10 @@ window.__ModuleLoader__.load({
           ),
         ),
       ]
-      return () => disposers.forEach((dispose) => dispose())
+      return async () => {
+        disposers.forEach((dispose) => dispose())
+        await unmountConnection()
+      }
     }
     return { apply, inject }
   },

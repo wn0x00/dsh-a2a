@@ -1,29 +1,37 @@
 # DeepSeek Harness A2A Bridge
 
+Canonical source: [xbot/deepseek-harness-a2a](https://gitea.guanzhu.me/xbot/deepseek-harness-a2a)
+(private repository). Develop and review plugin changes here. The platform keeps a
+pinned vendor snapshot for its builds and source download; sync a reviewed source
+commit instead of editing that copy.
+
+Maintainer documentation: [architecture](https://gitea.guanzhu.me/xbot/deepseek-harness-a2a/src/branch/main/docs/ARCHITECTURE.md)
+and [release / platform synchronization](https://gitea.guanzhu.me/xbot/deepseek-harness-a2a/src/branch/main/docs/RELEASE.md).
+
 This Cordis bundle loads **inside DeepSeek Harness** through its `dsh.bundle`
 manifest and `cordis.patch.yml`. It receives the real `ctx.agents` service,
 receives standard A2A Messages and returns Task status and result artifacts.
-It requires Node 22.19+ and DSH 0.2.0-rc.2 or newer in the 0.2 series. The separate executable is a transport
+It requires Node 22.19+ and DSH 0.2.1-rc.2 or newer in the 0.2 series. The separate executable is a transport
 diagnostic; installing that executable alone does not enable a Harness plugin.
 
 ## Install or update
 
 In the platform, open an Agent's **子 Agent → 添加子 Agent**, then select the
 **info** icon for connection instructions and a direct download of version
-**0.1.8**. There is no separate device list or download page.
+**0.1.9**. There is no separate device list or download page.
 
 In the Windows graphical client:
 
 1. Open **Plugins**. If the bridge is already installed, uninstall the old
    version first; DSH does not upgrade an installed bundle in place.
 2. Select **Add plugin**. In **包名或地址**, enter the downloaded file's full
-   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.8.tgz`.
+   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.9.tgz`.
 3. In **安装源**, select the npm official registry (`https://registry.npmjs.org/`)
    or a working default registry. A plugin `.tgz` URL belongs in **包名或地址**,
    never in **安装源** / `--registry`.
 4. Install, then click **立即启用 / Enable now**. Successful pnpm output only
    confirms installation; the graphical client installs bundles disabled.
-5. Fully exit and restart Harness. Check the installed version is **0.1.8**.
+5. Fully exit and restart Harness. Check the installed version is **0.1.9**.
 
 Perform these steps in the same graphical client/profile. An installation in a
 separate CLI profile does not activate it in the graphical client. Uninstalling
@@ -32,7 +40,7 @@ the bundle does not remove the bridge's separately stored platform credentials.
 For a CLI profile:
 
 ```powershell
-dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.8.tgz
+dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.9.tgz
 dsh --profile demo
 ```
 
@@ -67,14 +75,34 @@ No client secret or platform admin session is
 stored in Harness. The loopback callback is
 `http://127.0.0.1:43127/oauth/callback`; it listens only while authorization is
 pending and closes after completion or ten minutes. If a browser does not open,
-copy the authorization URL printed in the Harness log. After a timeout or denied
-request, select **连接平台** again to create a fresh authorization request.
+the connection card reports the failure; retry from the settings page. After a
+timeout or denied request, select **连接平台** again to create a fresh authorization
+request. The settings page does not expose authorization URLs, PKCE state or
+credentials.
 Startup only restores saved credentials; it never opens a consent page by itself.
 The local callback displays success only after token exchange and device
 registration finish. It then attempts the desktop's fixed `dsh://open` command
 and offers **打开 DeepSeek Harness** if the browser requires a click. This
 foreground action carries no authorization code or token. The top-level loopback
 redirect remains the credential channel; no cloud-to-loopback fetch is used.
+
+The connection card shows the live state: **已连接**, **需要授权**,
+**等待浏览器授权**, **正在连接**, **连接中断**, or **连接失败**. It also displays the
+platform, device identity, active task count and recent connection/contact times.
+**刷新状态** reads the current host state; a settings save does not imply a
+successful connection. **无法读取状态** means the settings client cannot currently
+read the host service.
+
+Use **重新授权**, then confirm with **打开浏览器授权**, to start fresh consent for
+an idle device. Active tasks prevent reauthorization. While consent is pending,
+**取消本次授权** cancels that attempt. Reauthorization temporarily pauses task
+polling and retains the previous credentials until token exchange succeeds.
+Cancellation, refusal, timeout or failure to open the browser restores polling
+when the previous authorization is still valid. A first-time connection without
+previous credentials returns to **需要授权**. If new tokens were exchanged but
+device registration fails, the plugin keeps the new tokens and shows the failure;
+**连接平台** retries registration. Cancellation does not revoke a previously
+connected device's grant.
 
 Version 0.1.3 creates a new random device identity, persisted separately for
 each platform and Harness profile. **An old Keycloak device is not automatically
@@ -194,12 +222,15 @@ recorded Agent preset.
 revocation without browser popups, explicit reconnection, callback completion,
 identity settings, native execution and package metadata.
 `npm run pack:release` stages the `.tgz`, README and SHA-256 release manifest in
-`frontend/public/downloads/deepseek-harness-a2a/`.
+this repository's `release/` directory. Set `XBOT_RELEASE_DIR` to another directory
+(relative to the package root, or absolute) when exporting a release to the
+platform. Build and test with Node 22.19+ and `npm ci`; the package is private and
+is distributed as a versioned tarball, not published to the public npm registry.
 
 For transport diagnosis without Harness:
 
 ```powershell
-npm install .\xbot-deepseek-harness-a2a-0.1.8.tgz
+npm install .\xbot-deepseek-harness-a2a-0.1.9.tgz
 npx xbot-deepseek-harness-a2a
 # Revoke this diagnostic profile's authorization:
 npx xbot-deepseek-harness-a2a --logout

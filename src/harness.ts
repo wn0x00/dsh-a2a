@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import type { Context } from '@deepseek-ai/cordis'
 
 import { openAuthorizationUrl } from './browser.js'
+import { installConnectionControl } from './connection-control.js'
+import { ConnectionActionError } from './connection-state.js'
 import { startOAuthCallbackServer, type OAuthCallbackServer } from './oauth-callback.js'
 import { createBridge, type A2ABridge } from './plugin.js'
 import { createPlatformBridgeConfig, deviceIdentity } from './platform.js'
@@ -273,6 +276,8 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     let connectionRequest = configuredString(config.connectionRequest)
     let identity = deviceIdentity(config)
     let settingsUpdate = Promise.resolve()
+    let controlUpdate: Promise<void> | undefined
+    let initialized = false
     // This is the host Loader's committed volatile-config event, also used by
     // native DSH settings services. It does not require a private desktop RPC.
     ctx.on?.('loader/volatile-update', () => {
@@ -335,18 +340,47 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
         release = undefined
       }
       if (!disposed) console.error(`[${name}] failed to start`, error instanceof Error ? error.message : 'Unknown error')
+    }).finally(() => { initialized = true })
+
+    // Standalone bridge consumers have no Cordis registry; the real Host does.
+    if ('inject' in ctx) installConnectionControl(ctx as unknown as Context, {
+      status: () => bridge?.status() ?? {
+        phase: disposed ? 'stopped' : initialized ? 'error' : 'starting', notice: 'none',
+        gatewayUrl: '', deviceId: '', deviceName: identity.name, activeTasks: 0,
+        pendingExpiresAt: null, lastConnectedAt: null, lastContactAt: null,
+        canConnect: initialized && !disposed && !controlUpdate, canReauthorize: false, canCancelAuthorization: false,
+      },
+      act: async (action) => {
+        if (disposed) throw new ConnectionActionError('unavailable')
+        if (controlUpdate) throw new ConnectionActionError('busy')
+        const pending = (async () => {
+          await start
+          await settingsUpdate
+          if (disposed) throw new ConnectionActionError('unavailable')
+          if (!bridge) await initialize()
+          if (!bridge || disposed) throw new ConnectionActionError('unavailable')
+          await bridge[action]()
+        })()
+        controlUpdate = pending
+        try { await pending } finally { controlUpdate = undefined }
+      },
     })
 
     return async () => {
       disposed = true
+      // Fence the bridge before draining HTTP callbacks. A slow code exchange
+      // may finish during shutdown, but must not register or claim new work.
+      const stopping = bridge?.stop()
+      void stopping?.catch(() => undefined)
       await start.catch(() => undefined)
       await settingsUpdate
+      await controlUpdate?.catch(() => undefined)
       closeCallback()
       // An in-flight callback may still be registering. Drain it before
       // stopping the bridge so it cannot start a loop after teardown.
       await callbackClosing
       try {
-        await bridge?.stop()
+        await stopping
       } finally {
         try {
           await harness?.dispose?.()
