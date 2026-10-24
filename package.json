@@ -1,6 +1,6 @@
 {
   "name": "@xbot/deepseek-harness-a2a",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": false,
   "description": "A2A device bridge plugin for DeepSeek Harness on Windows",
   "type": "module",

@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { Button, Input } = require('@deepseek-ai/dsh-client-ui-primitives')
     const h = React.createElement
-    const fields = ['workingDirectory', 'agentPreset', 'provider', 'model']
+    const fields = ['deviceName', 'deviceDescription', 'workingDirectory', 'agentPreset', 'provider', 'model']
     const muted = { margin: 0, opacity: 0.72, lineHeight: 1.6 }
     const selectStyle = {
       width: '100%',
@@ -143,7 +143,7 @@ window.__ModuleLoader__.load({
             setDraft(null)
             setNotice({
               error: false,
-              text: '任务配置已保存，新平台对话将使用此工作区、Agent 预设和默认模型。已有会话保留原工作区，在 DSH 中继续查看和操作。',
+              text: '配置已保存。已连接设备的名称和描述会同步到平台；新对话使用所选工作区、Agent 预设和模型。',
             })
           } else {
             setNotice({
@@ -161,6 +161,26 @@ window.__ModuleLoader__.load({
           if (mounted.current) setBusy(null)
         }
       }
+      async function connect() {
+        if (!editable || busy || changed) return
+        setBusy('connect')
+        setNotice(null)
+        try {
+          const accepted = await form.mutate([
+            { op: 'set', path: ['connectionRequest'], value: `${Date.now()}-${Math.random().toString(36).slice(2)}` },
+          ], snapshot.revision)
+          if (mounted.current) setNotice({
+            error: !accepted,
+            text: accepted
+              ? '已请求连接。需要授权时会打开浏览器；完成后可回到平台刷新本地智能体。若未打开，请检查 Harness 日志后重试。'
+              : '连接请求未保存，请检查 Harness 连接后重试。',
+          })
+        } catch {
+          if (mounted.current) setNotice({ error: true, text: '无法请求连接，请检查 Harness 连接后重试。' })
+        } finally {
+          if (mounted.current) setBusy(null)
+        }
+      }
       const disabled = !editable || busy !== null
       return h(
         'form',
@@ -170,6 +190,25 @@ window.__ModuleLoader__.load({
           style: { display: 'grid', gap: 12, maxWidth: 680, minWidth: 0 },
         },
         h('h3', { style: { margin: 0, fontSize: 16 } }, 'Xbot 平台任务'),
+        h('label', { htmlFor: `${id}-name` }, '设备名称'),
+        h(Input, {
+          id: `${id}-name`, 'aria-label': '设备名称', value: value.deviceName,
+          maxLength: 200, disabled, placeholder: '留空使用 DeepSeek Harness（计算机名）',
+          onChange: (event) => update({ deviceName: event.target.value }),
+        }),
+        h('label', { htmlFor: `${id}-description` }, '设备描述（可选）'),
+        h('textarea', {
+          id: `${id}-description`, 'aria-label': '设备描述', value: value.deviceDescription,
+          maxLength: 1000, rows: 2, disabled, style: { ...selectStyle, resize: 'vertical' },
+          placeholder: '说明此设备适合处理的任务，平台子 Agent 列表和 A2A Card 会展示。',
+          onChange: (event) => update({ deviceDescription: event.target.value }),
+        }),
+        h('div', null,
+          h(Button, { type: 'button', variant: 'outline', disabled: disabled || changed, onClick: connect },
+            busy === 'connect' ? '正在请求…' : '连接平台'),
+          h('p', { style: { ...muted, marginTop: 8, fontSize: 12 } },
+            changed ? '先保存配置，再连接平台。' : '首次连接、授权过期或在平台断开后，点击此处授权。已连接时会保留现有连接。'),
+        ),
         h(
           'p',
           { style: muted },

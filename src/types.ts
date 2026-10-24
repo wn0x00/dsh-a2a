@@ -122,7 +122,10 @@ export type HarnessContext = {
 export type HarnessCordisContext = {
   baseUrl?: string
   fiber?: { uid?: number }
-  on?: (name: 'internal/config', handler: (this: { uid?: number }, raw: unknown, next: () => unknown) => unknown) => unknown
+  on?: {
+    (name: 'internal/config', handler: (this: { uid?: number }, raw: unknown, next: () => unknown) => unknown): unknown
+    (name: 'loader/volatile-update', handler: () => void): unknown
+  }
   get?: {
     (name: 'fs'): {
       resolve: (path: string) => Promise<unknown>
@@ -241,7 +244,10 @@ export type HarnessPluginConfig = {
   clientId?: string
   redirectUri?: string
   deviceId?: string
-  deviceName?: string
+  deviceName?: HarnessConfigString
+  deviceDescription?: HarnessConfigString
+  /** Changed only by the local Settings connect button; never a credential. */
+  connectionRequest?: HarnessConfigString
   platform?: string
   capabilities?: string[]
   scopes?: string[]
@@ -289,6 +295,7 @@ export type OAuthConfig = {
 export type DeviceConfig = {
   id: string
   name: string
+  description?: string
   platform?: string
   capabilities: string[]
 }

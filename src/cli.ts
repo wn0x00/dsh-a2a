@@ -32,7 +32,7 @@ async function main(): Promise<void> {
       console.info('Device connected. Waiting for A2A tasks.')
     }, async (state) => {
       await bridge.cancelAuthorization(state)
-    })
+    }, { openDesktop: false })
     timer = setTimeout(() => {
       closeCallback()
       console.warn('Authorization expired. Restart the runner to retry.')
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       return
     }
     console.info(`Diagnostic gateway: ${prepared.config.gatewayUrl}`)
-    await bridge.start()
+    await bridge.connect()
     await new Promise<void>((resolve) => {
       process.once('SIGINT', resolve)
       process.once('SIGTERM', resolve)

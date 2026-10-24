@@ -12,6 +12,7 @@ export class A2ABridge {
   private stopController: AbortController | undefined
   private loopPromise: Promise<void> | undefined
   private lastEventId: string | undefined
+  private connecting: Promise<void> | undefined
 
   constructor(
     private readonly ctx: HarnessContext,
@@ -48,18 +49,35 @@ export class A2ABridge {
     )
   }
 
-  /** Start the device connection. If no token exists, this opens PKCE login. */
+  /** Restore saved credentials without opening a browser on startup/revocation. */
   async start(): Promise<void> {
-    if (this.loopPromise) return
     try {
-      await this.oauth.accessToken()
-      await this.gateway.register(this.allowedSkills)
+      await this.registerConnection()
     } catch (error) {
       if (!(error instanceof OAuthLoginRequiredError)) throw error
-      await this.oauth.beginAuthorization()
-      this.log('info', 'OAuth login required; browser authorization was opened')
-      return
+      this.log('info', 'Connect this device from Harness Settings → Xbot platform tasks')
     }
+  }
+
+  /** The local Settings button or explicitly invoked diagnostic starts consent. */
+  async connect(): Promise<void> {
+    if (this.connecting) return this.connecting
+    this.connecting = (async () => {
+      try {
+        await this.registerConnection()
+      } catch (error) {
+        if (!(error instanceof OAuthLoginRequiredError)) throw error
+        await this.oauth.beginAuthorization(true)
+        this.log('info', 'Browser authorization opened; approve this device in the platform')
+      }
+    })()
+    try { await this.connecting } finally { this.connecting = undefined }
+  }
+
+  private async registerConnection(): Promise<void> {
+    if (this.loopPromise) return
+    await this.oauth.accessToken()
+    await this.gateway.register(this.allowedSkills)
     // Register for both pull and SSE transports.  Registration binds the stable
     // device id to the OAuth subject before the first task claim; pull mode used
     // to skip it and therefore required an out-of-band database row.
@@ -70,12 +88,27 @@ export class A2ABridge {
   /** Complete the callback received by the host's localhost redirect server. */
   async completeAuthorization(code: string, state: string): Promise<void> {
     await this.oauth.completeAuthorization(code, state)
-    await this.start()
+    // A successful token exchange alone is not a connected device. Registration
+    // errors must reach the callback page, never start another consent silently.
+    await this.registerConnection()
+  }
+
+  async updateIdentity(identity: { name: string; description: string }): Promise<void> {
+    Object.assign(this.config.device, identity)
+    if (this.config.oauth.device) this.config.oauth.device.name = identity.name
+    this.gateway.updateIdentity(identity)
+    if (!this.loopPromise) return
+    try {
+      await this.gateway.register(this.allowedSkills)
+    } catch (error) {
+      if (error instanceof OAuthLoginRequiredError) await this.stop()
+      throw error
+    }
   }
 
   async cancelAuthorization(state: string): Promise<void> {
     await this.oauth.cancelAuthorization(state)
-    this.log('info', 'Device authorization was declined; restart the plugin to retry')
+    this.log('info', 'Device authorization was declined; connect again from Harness settings')
   }
 
   async logout(): Promise<void> {
@@ -131,19 +164,12 @@ export class A2ABridge {
         }
       } catch (error) {
         if (error instanceof OAuthLoginRequiredError && !stopController.signal.aborted) {
-          // Pause task polling while consent is pending. A fresh callback starts
-          // a new loop; repeated 401s must not open a browser on every poll.
+          // Revocation is an intentional disconnect. Only a local user action
+          // may open a fresh authorization page, even after restarting Harness.
           await this.runner.stop()
           this.loopPromise = undefined
           this.stopController = undefined
-          try {
-            await this.oauth.beginAuthorization()
-            this.log('info', 'Device authorization expired or was revoked; confirm authorization in the platform')
-          } catch (authorizationError) {
-            this.log('error', 'Unable to request device authorization; restart Harness to retry', {
-              error: authorizationError instanceof Error ? authorizationError.message : String(authorizationError),
-            })
-          }
+          this.log('info', 'Device authorization expired or was revoked; connect again from Harness Settings → Xbot platform tasks')
           return
         }
         if (!stopController.signal.aborted) {

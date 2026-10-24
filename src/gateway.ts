@@ -264,12 +264,17 @@ export class GatewayClient {
     return (await response.json()) as AgentCard
   }
 
+  updateIdentity(identity: Pick<DeviceConfig, 'name' | 'description'>): void {
+    Object.assign(this.device, identity)
+  }
+
   async register(allowedSkills: string[] = []): Promise<DeviceRegistration> {
     const response = await this.request(this.path(this.paths.register), {
       method: 'POST',
       body: JSON.stringify({
         deviceId: this.device.id,
         deviceName: this.device.name,
+        description: this.device.description ?? '',
         platform: this.device.platform ?? 'windows',
         capabilities: this.device.capabilities,
         allowedSkills,

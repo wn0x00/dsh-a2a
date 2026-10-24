@@ -206,7 +206,7 @@ async function renderConfiguration(t, options = {}) {
     registrations,
     publish,
     picked: () => picked,
-    input: () => view.root.findByType('input'),
+    input: () => view.root.findByProps({ 'aria-label': '工作区目录' }),
     button: (label) =>
       view.root
         .findAllByType('button')
@@ -222,7 +222,7 @@ async function renderConfiguration(t, options = {}) {
     },
     edit: async (value) => {
       await act(async () => {
-        view.root.findByType('input').props.onChange({ target: { value } })
+        view.root.findByProps({ 'aria-label': '工作区目录' }).props.onChange({ target: { value } })
       })
     },
     select: async (label, value) => {
@@ -260,7 +260,7 @@ test('native bundle configuration reads the host value and saves the chosen dire
       revision: 3,
     },
   ])
-  assert.match(page.text(), /任务配置已保存/)
+  assert.match(page.text(), /配置已保存/)
   assert.equal(page.button('保存任务配置').props.disabled, true)
 })
 
@@ -289,7 +289,7 @@ test('manual directory entry remains usable when the OS picker is unavailable', 
   await page.edit('C:\\Users\\用户\\工作目录')
   await page.save()
   assert.equal(page.writes[0].ops[0].value, 'C:\\Users\\用户\\工作目录')
-  assert.match(page.text(), /任务配置已保存/)
+  assert.match(page.text(), /配置已保存/)
 })
 
 test('host validation refusal never displays an unsaved path as saved', async (t) => {
@@ -418,4 +418,26 @@ test('unavailable catalogs are explained without hiding directory configuration'
     true,
   )
   assert.equal(page.input().props.disabled, false)
+})
+
+
+test('identity edits save bounded fields and connecting is an explicit revisioned request', async (t) => {
+  const page = await renderConfiguration(t)
+  assert.equal(page.button('连接平台').props.disabled, false)
+  await act(async () => {
+    page.view.root.findByProps({ 'aria-label': '设备名称' }).props.onChange({ target: { value: 'Office Harness' } })
+    page.view.root.findByProps({ 'aria-label': '设备描述' }).props.onChange({ target: { value: 'Local automation' } })
+  })
+  assert.equal(page.button('连接平台').props.disabled, true)
+  await page.save()
+  assert.deepEqual(page.writes[0].ops, [
+    { op: 'set', path: ['deviceName'], value: 'Office Harness' },
+    { op: 'set', path: ['deviceDescription'], value: 'Local automation' },
+  ])
+  await act(async () => { await page.button('连接平台').props.onClick() })
+  assert.equal(page.writes[1].revision, 4)
+  assert.deepEqual(page.writes[1].ops[0].path, ['connectionRequest'])
+  assert.equal(typeof page.writes[1].ops[0].value, 'string')
+  assert.match(page.text(), /已请求连接/)
+  assert.doesNotMatch(page.text(), /连接成功/)
 })

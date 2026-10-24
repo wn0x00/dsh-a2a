@@ -153,15 +153,17 @@ test('logout revokes the grant and removes local credentials', async () => {
   assert.equal(await store.get(), undefined)
 })
 
-test('revoked live bridge pauses polling and opens authorization once', async () => {
+test('revocation and restart stay disconnected until the user explicitly connects', async () => {
   const store = new MemoryTokenStore()
   await store.set({ accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() + 900000 })
-  let opens = 0, polls = 0, resolveOpened
-  const opened = new Promise((resolve) => { resolveOpened = resolve })
-  const bridge = createBridge({ agents: { run: async () => ({}) } }, {
+  let opens = 0, polls = 0, resolvePaused
+  const paused = new Promise((resolve) => { resolvePaused = resolve })
+  const bridge = createBridge({ agents: { run: async () => ({}) }, logger: { info: (message) => {
+    if (message.includes('expired or was revoked')) resolvePaused()
+  } } }, {
     gatewayUrl: 'http://127.0.0.1:8000', transport: 'pull', pollIntervalMs: 250,
     device: { id: 'xbot-test', name: 'Computer', capabilities: [] },
-    oauth: oauthConfig(store, { openAuthorizationUrl: () => { opens++; resolveOpened() } }),
+    oauth: oauthConfig(store, { openAuthorizationUrl: () => { opens++ } }),
     fetch: async (url) => {
       if (String(url).endsWith('/register')) return Response.json({ deviceId: 'xbot-test' })
       if (String(url).endsWith('/requests')) return Response.json({ authorization_url: `${metadata.authorization_endpoint}?request_id=new`, expires_in: 600 })
@@ -171,11 +173,16 @@ test('revoked live bridge pauses polling and opens authorization once', async ()
   })
   try {
     await bridge.start()
-    await opened
+    await paused
     await new Promise((resolve) => setTimeout(resolve, 350))
-    assert.equal(opens, 1)
+    assert.equal(opens, 0)
     assert.equal(polls, 1)
     assert.equal(await store.get(), undefined)
+    await bridge.start()
+    assert.equal(opens, 0)
+    await bridge.connect()
+    assert.equal(opens, 1)
+    assert.equal(polls, 1)
   } finally { await bridge.stop() }
 })
 

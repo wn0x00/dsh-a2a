@@ -10,20 +10,20 @@ diagnostic; installing that executable alone does not enable a Harness plugin.
 
 In the platform, open an Agent's **子 Agent → 添加子 Agent**, then select the
 **info** icon for connection instructions and a direct download of version
-**0.1.7**. There is no separate device list or download page.
+**0.1.8**. There is no separate device list or download page.
 
 In the Windows graphical client:
 
 1. Open **Plugins**. If the bridge is already installed, uninstall the old
    version first; DSH does not upgrade an installed bundle in place.
 2. Select **Add plugin**. In **包名或地址**, enter the downloaded file's full
-   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.7.tgz`.
+   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.8.tgz`.
 3. In **安装源**, select the npm official registry (`https://registry.npmjs.org/`)
    or a working default registry. A plugin `.tgz` URL belongs in **包名或地址**,
    never in **安装源** / `--registry`.
 4. Install, then click **立即启用 / Enable now**. Successful pnpm output only
    confirms installation; the graphical client installs bundles disabled.
-5. Fully exit and restart Harness. Check the installed version is **0.1.7**.
+5. Fully exit and restart Harness. Check the installed version is **0.1.8**.
 
 Perform these steps in the same graphical client/profile. An installation in a
 separate CLI profile does not activate it in the graphical client. Uninstalling
@@ -32,7 +32,7 @@ the bundle does not remove the bridge's separately stored platform credentials.
 For a CLI profile:
 
 ```powershell
-dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.7.tgz
+dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.8.tgz
 dsh --profile demo
 ```
 
@@ -57,9 +57,10 @@ internal tools.
 
 ## Platform account authorization
 
-On first launch, the plugin reads the platform's authorization metadata,
-creates a device authorization request with an S256 PKCE challenge, and opens
-the platform's **连接本地智能体** authorization page. Sign in with your platform
+Open **设置 → Xbot 平台任务**, optionally set **设备名称** and **设备描述**,
+then select **保存任务配置** and **连接平台**. The plugin reads the platform's
+authorization metadata, creates a device authorization request with an S256
+PKCE challenge, and opens the platform's **连接本地智能体** authorization page. Sign in with your platform
 account and approve the displayed Harness instance. Return to **子 Agent** and
 select the local agent; the list refreshes and configuration saves automatically.
 No client secret or platform admin session is
@@ -67,7 +68,13 @@ stored in Harness. The loopback callback is
 `http://127.0.0.1:43127/oauth/callback`; it listens only while authorization is
 pending and closes after completion or ten minutes. If a browser does not open,
 copy the authorization URL printed in the Harness log. After a timeout or denied
-request, restart the plugin to request authorization again.
+request, select **连接平台** again to create a fresh authorization request.
+Startup only restores saved credentials; it never opens a consent page by itself.
+The local callback displays success only after token exchange and device
+registration finish. It then attempts the desktop's fixed `dsh://open` command
+and offers **打开 DeepSeek Harness** if the browser requires a click. This
+foreground action carries no authorization code or token. The top-level loopback
+redirect remains the credential channel; no cloud-to-loopback fetch is used.
 
 Version 0.1.3 creates a new random device identity, persisted separately for
 each platform and Harness profile. **An old Keycloak device is not automatically
@@ -86,10 +93,16 @@ The lock is released when the plugin stops; a stale lock from an exited process
 is recovered on the next start.
 
 The plugin rotates refresh tokens before access-token expiry. If the platform
-revokes the grant or it expires, polling pauses and one new authorization page
-opens. It does not repeatedly launch the browser on every poll. Removing a target
+revokes the grant or it expires, polling pauses without opening a browser.
+Select **连接平台** in Harness settings when you want to authorize again. Removing a target
 with the trash icon in **子 Agent** changes only that calling Agent's configuration;
 it does not revoke the shared device grant. A revoked grant requires fresh approval.
+The device name defaults to `DeepSeek Harness (<computer name>)`. **设备名称**
+overrides that default (and the existing `A2A_DEVICE_NAME` fallback). The optional
+**设备描述** is limited to 1,000 characters. Saving these fields on an already
+connected device updates its platform directory entry and per-device A2A Card;
+it does not change the global platform gateway Card or any hosted Agent's name/persona. Neither field grants tools or permissions.
+
 `A2A_PROFILE` or the plugin `profile` property can
 explicitly select credential isolation for a custom host; native Harness uses
 its profile's Cordis `baseUrl` automatically.
@@ -178,14 +191,15 @@ recorded Agent preset.
 ## Build and diagnostic runner
 
 `npm test` builds and checks PKCE, persistent profile isolation, refresh rotation,
-revocation, single reauthorization, native execution and package metadata.
+revocation without browser popups, explicit reconnection, callback completion,
+identity settings, native execution and package metadata.
 `npm run pack:release` stages the `.tgz`, README and SHA-256 release manifest in
 `frontend/public/downloads/deepseek-harness-a2a/`.
 
 For transport diagnosis without Harness:
 
 ```powershell
-npm install .\xbot-deepseek-harness-a2a-0.1.7.tgz
+npm install .\xbot-deepseek-harness-a2a-0.1.8.tgz
 npx xbot-deepseek-harness-a2a
 # Revoke this diagnostic profile's authorization:
 npx xbot-deepseek-harness-a2a --logout

@@ -72,7 +72,11 @@ export class OAuthClient {
 
   private readonly fetchImpl: typeof globalThis.fetch
 
-  async beginAuthorization(): Promise<AuthorizationRequest> {
+  async beginAuthorization(restart = false): Promise<AuthorizationRequest> {
+    if (restart && this.pending) {
+      this.pending = undefined
+      await this.config.authorizationCompleted?.()
+    }
     if (this.pending && this.pending.expiresAt > Date.now()) return this.pending
     if (this.authorizationPromise) return this.authorizationPromise
     this.authorizationPromise = this.createAuthorization()
@@ -131,7 +135,13 @@ export class OAuthClient {
       redirect_uri: this.config.redirectUri,
       code_verifier: pending.verifier,
     })
-    const tokens = await this.exchange(body)
+    let tokens: TokenSet
+    try {
+      tokens = await this.exchange(body)
+    } catch (error) {
+      await this.config.authorizationCompleted?.()
+      throw error
+    }
     // New consent starts a new local conversation scope, including when a
     // different platform account authorizes the same installed plugin.
     tokens.sessionScope = randomUrlValue()

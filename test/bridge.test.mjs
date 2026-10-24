@@ -21,7 +21,7 @@ test('bridge registration advertises actual skill handlers separately from permi
       tokenEndpoint: 'https://auth.example/token', redirectUri: 'http://127.0.0.1/callback',
       scopes: ['device.connect'], tokenStore: store, openAuthorizationUrl: () => {},
     },
-    device: { id: 'windows', name: 'Windows Harness', capabilities: ['workspace.read', 'workspace.write'] },
+    device: { id: 'windows', name: 'Windows Harness', description: 'Desktop work', capabilities: ['workspace.read', 'workspace.write'] },
     allowedSkills: ['demo.echo', 'demo.echo'],
     skills: { 'report.export': async () => ({ text: 'custom result' }) },
     fetch: async (url, init) => {
@@ -40,7 +40,11 @@ test('bridge registration advertises actual skill handlers separately from permi
     for (const registration of registrations) {
       assert.deepEqual(registration.capabilities, ['workspace.read', 'workspace.write'])
       assert.deepEqual(registration.allowedSkills.sort(), ['demo.echo', 'report.export'])
+      assert.equal(registration.description, 'Desktop work')
     }
+    await bridge.updateIdentity({ name: 'Office device', description: 'Local project tasks' })
+    assert.equal(registrations.at(-1).deviceName, 'Office device')
+    assert.equal(registrations.at(-1).description, 'Local project tasks')
   } finally {
     await bridge.stop()
   }

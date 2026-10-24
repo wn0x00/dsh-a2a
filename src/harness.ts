@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { openAuthorizationUrl } from './browser.js'
 import { startOAuthCallbackServer, type OAuthCallbackServer } from './oauth-callback.js'
 import { createBridge, type A2ABridge } from './plugin.js'
-import { createPlatformBridgeConfig } from './platform.js'
+import { createPlatformBridgeConfig, deviceIdentity } from './platform.js'
 import { HarnessSessionIndex } from './session-index.js'
 import { installWorkspaceSettings, resolveWorkingDirectory } from './workspace-settings.js'
 import type {
@@ -266,23 +266,49 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     let bridge: A2ABridge | undefined
     let harness: HarnessContext | undefined
     let callback: OAuthCallbackServer | undefined
+    let callbackClosing = Promise.resolve()
     let callbackTimer: ReturnType<typeof setTimeout> | undefined
     let release: (() => Promise<void>) | undefined
     let disposed = false
+    let connectionRequest = configuredString(config.connectionRequest)
+    let identity = deviceIdentity(config)
+    let settingsUpdate = Promise.resolve()
+    // This is the host Loader's committed volatile-config event, also used by
+    // native DSH settings services. It does not require a private desktop RPC.
+    ctx.on?.('loader/volatile-update', () => {
+      const nextRequest = configuredString(config.connectionRequest)
+      const nextIdentity = deviceIdentity(config)
+      const connect = nextRequest !== connectionRequest
+      const changed = nextIdentity.name !== identity.name || nextIdentity.description !== identity.description
+      connectionRequest = nextRequest
+      identity = nextIdentity
+      if (!connect && !changed) return
+      settingsUpdate = settingsUpdate.then(async () => {
+        await start
+        if (disposed) return
+        if (!bridge) await initialize()
+        if (!bridge || disposed) return
+        if (changed) await bridge.updateIdentity(nextIdentity)
+        if (connect) await bridge.connect()
+      }).catch((error: unknown) => {
+        if (!disposed) console.error(`[${name}] connection needs attention; retry from Settings`, error instanceof Error ? error.message : 'Unknown error')
+      })
+    })
     const closeCallback = () => {
       clearTimeout(callbackTimer)
       const active = callback
       callback = undefined
       // Do not await an active callback HTTP response from inside that response.
-      if (active) void active.close()
+      if (active) callbackClosing = active.close()
     }
-    const start = (async () => {
+    const initialize = async () => {
       const prepared = await createPlatformBridgeConfig(config, openAuthorizationUrl, ctx.baseUrl)
       release = prepared.release
       if (disposed) return
       prepared.config.oauth.prepareAuthorization = async () => {
         if (disposed) throw new Error('Harness plugin has stopped')
-        if (callback) await callback.close()
+        closeCallback()
+        await callbackClosing
         callback = await startOAuthCallbackServer(prepared.config.oauth.redirectUri, async (code, state) => {
           if (!bridge || disposed) throw new Error('A2A bridge is not running')
           await bridge.completeAuthorization(code, state)
@@ -292,7 +318,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
         })
         callbackTimer = setTimeout(() => {
           closeCallback()
-          console.warn(`[${name}] authorization timed out; restart the plugin to retry`)
+          console.warn(`[${name}] authorization timed out; connect again from Harness settings`)
         }, 600_000)
         callbackTimer.unref()
       }
@@ -301,16 +327,24 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
       bridge = createBridge(harness, prepared.config)
       console.info(`[${name}] loaded; connecting to platform ${prepared.config.gatewayUrl}`)
       await bridge.start()
-    })().catch(async (error: unknown) => {
+    }
+    const start = initialize().catch(async (error: unknown) => {
       closeCallback()
-      await release?.()
-      release = undefined
+      if (!bridge) {
+        await release?.()
+        release = undefined
+      }
       if (!disposed) console.error(`[${name}] failed to start`, error instanceof Error ? error.message : 'Unknown error')
     })
 
     return async () => {
       disposed = true
       await start.catch(() => undefined)
+      await settingsUpdate
+      closeCallback()
+      // An in-flight callback may still be registering. Drain it before
+      // stopping the bridge so it cannot start a loop after teardown.
+      await callbackClosing
       try {
         await bridge?.stop()
       } finally {
@@ -320,6 +354,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
           // A failed persistence close must not strand this live process's
           // profile lock after all retained handles have drained their teardown.
           closeCallback()
+          await callbackClosing
           const unlock = release
           release = undefined
           await unlock?.()

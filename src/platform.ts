@@ -12,6 +12,17 @@ function env(name: string, fallback: string): string {
   return process.env[name]?.trim() || fallback
 }
 
+export function configuredString(value: HarnessPluginConfig['deviceName']): string {
+  return typeof value === 'string' ? value : (value?.get() ?? '')
+}
+
+export function deviceIdentity(config: HarnessPluginConfig): { name: string; description: string } {
+  return {
+    name: configuredString(config.deviceName).trim() || env('A2A_DEVICE_NAME', `DeepSeek Harness (${hostname()})`),
+    description: configuredString(config.deviceDescription).trim(),
+  }
+}
+
 function profileName(): string {
   const index = process.argv.indexOf('--profile')
   return (index >= 0 ? process.argv[index + 1] : undefined)
@@ -49,7 +60,7 @@ export async function createPlatformBridgeConfig(
     const device = {
       // Legacy A2A_DEVICE_ID is intentionally not inherited in platform mode.
       id: config.deviceId ?? (external ? env('A2A_DEVICE_ID', identity) : identity),
-      name: config.deviceName ?? env('A2A_DEVICE_NAME', `DeepSeek Harness (${hostname()})`),
+      ...deviceIdentity(config),
       platform: config.platform ?? (process.platform === 'win32' ? 'windows' : process.platform),
       capabilities: [...new Set(capabilities)],
     }

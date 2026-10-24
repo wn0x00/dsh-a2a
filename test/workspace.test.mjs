@@ -106,8 +106,49 @@ test('working directory schema stays serializable and preserves ordinary plugin 
   assert.equal(parsed.value.provider.get(), 'private-provider')
   assert.equal(parsed.value.model.get(), '')
   assert.equal(parsed.value.agentPreset.get(), '')
+  assert.equal(parsed.value.deviceName.get(), '')
+  assert.equal(parsed.value.deviceDescription.get(), '')
   assert.equal(configuredWorkingDirectory(parsed.value), '')
   assert.doesNotMatch(JSON.stringify(Config), /realpath|statSync|validateHostDirectory/)
+})
+
+test('committed native identity edits register changes and connect requests run only once', async (t) => {
+  const { root, workspace } = await fixture(t)
+  const { ctx } = host(workspace)
+  const listeners = new Map()
+  const updates = []
+  let cleanup, connected = 0, ready
+  const started = new Promise((resolve) => { ready = resolve })
+  let deviceName = 'Initial device', deviceDescription = '', request = ''
+  ctx.on = (event, callback) => { listeners.set(event, callback) }
+  ctx.effect = (effect) => { cleanup = effect() }
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    authorization_endpoint: 'https://platform.example/authorize',
+    token_endpoint: 'https://platform.example/token',
+  }))
+  t.mock.method(A2ABridge.prototype, 'start', async () => { ready() })
+  t.mock.method(A2ABridge.prototype, 'connect', async () => { connected++ })
+  t.mock.method(A2ABridge.prototype, 'updateIdentity', async (value) => { updates.push(value) })
+  apply(ctx, {
+    gatewayUrl: 'https://platform.example', storageDirectory: join(root, 'credentials'),
+    workingDirectory: workspace,
+    deviceName: { get: () => deviceName }, deviceDescription: { get: () => deviceDescription },
+    connectionRequest: { get: () => request },
+  })
+  t.after(() => cleanup())
+  await started
+  assert.equal(connected, 0)
+  deviceName = ' Office device '
+  deviceDescription = ' Local project work '
+  request = 'explicit-click'
+  listeners.get('loader/volatile-update')()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(updates, [{ name: 'Office device', description: 'Local project work' }])
+  assert.equal(connected, 1)
+  listeners.get('loader/volatile-update')()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(connected, 1)
+  assert.equal(updates.length, 1)
 })
 
 test('local directory validation rejects missing, file, relative and drive-relative paths', async (t) => {
