@@ -39,6 +39,14 @@ function safeEndpoint(value: unknown, label: string): string {
   return url.toString()
 }
 
+/** Resolve storage without contacting the platform, including for self-update. */
+export function platformStorageDirectory(config: HarnessPluginConfig, profileBaseUrl?: string): string {
+  const gatewayUrl = safeEndpoint(config.gatewayUrl ?? env('A2A_GATEWAY_URL', DEFAULT_GATEWAY), 'platform URL')
+  const external = (config.authMode ?? env('A2A_AUTH_MODE', 'platform')) === 'external'
+  const profile = config.profile ?? process.env.A2A_PROFILE?.trim() ?? profileBaseUrl ?? profileName()
+  return profileStorageDirectory(gatewayUrl, `${external ? 'external' : 'platform'}:${profile}`, config.storageDirectory)
+}
+
 /** Shared by the native Cordis adapter and the explicit diagnostic runner. */
 export async function createPlatformBridgeConfig(
   config: HarnessPluginConfig,
@@ -48,8 +56,7 @@ export async function createPlatformBridgeConfig(
 ): Promise<{ config: BridgeConfig; directory: string; release: () => Promise<void> }> {
   const gatewayUrl = safeEndpoint(config.gatewayUrl ?? env('A2A_GATEWAY_URL', DEFAULT_GATEWAY), 'platform URL')
   const external = (config.authMode ?? env('A2A_AUTH_MODE', 'platform')) === 'external'
-  const profile = config.profile ?? process.env.A2A_PROFILE?.trim() ?? profileBaseUrl ?? profileName()
-  const directory = profileStorageDirectory(gatewayUrl, `${external ? 'external' : 'platform'}:${profile}`, config.storageDirectory)
+  const directory = platformStorageDirectory(config, profileBaseUrl)
   const release = await lockProfile(directory)
   try {
     const identity = await persistentDeviceId(directory)

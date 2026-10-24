@@ -16,22 +16,29 @@ diagnostic; installing that executable alone does not enable a Harness plugin.
 
 ## Install or update
 
-In the platform, open an Agent's **子 Agent → 添加子 Agent**, then select the
-**info** icon for connection instructions and a direct download of version
-**0.1.9**. There is no separate device list or download page.
+Download version **0.1.10** from
+[Gitea Packages](https://gitea.guanzhu.me/xbot/-/packages?q=deepseek-harness-a2a).
+Sign in with an account that can read the private `xbot` organization packages.
+Choose `xbot-deepseek-harness-a2a-0.1.10.tgz`; `release-manifest.json` records its
+size and SHA-256. Plugin packages are released independently of platform CI/CD.
+The platform's pinned download may therefore be an older version.
+
+The first update from 0.1.9 is manual. From 0.1.10 onward, **Xbot 平台任务 →
+插件更新** can check and install newer Gitea packages after you configure a
+read-only credential. It never installs updates automatically in the background.
 
 In the Windows graphical client:
 
-1. Open **Plugins**. If the bridge is already installed, uninstall the old
-   version first; DSH does not upgrade an installed bundle in place.
+1. Open **Plugins**. For the first manual upgrade from 0.1.9, uninstall the old
+   version before adding the new archive through the graphical installer.
 2. Select **Add plugin**. In **包名或地址**, enter the downloaded file's full
-   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.9.tgz`.
+   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.10.tgz`.
 3. In **安装源**, select the npm official registry (`https://registry.npmjs.org/`)
    or a working default registry. A plugin `.tgz` URL belongs in **包名或地址**,
    never in **安装源** / `--registry`.
 4. Install, then click **立即启用 / Enable now**. Successful pnpm output only
    confirms installation; the graphical client installs bundles disabled.
-5. Fully exit and restart Harness. Check the installed version is **0.1.9**.
+5. Fully exit and restart Harness. Check the installed version is **0.1.10**.
 
 Perform these steps in the same graphical client/profile. An installation in a
 separate CLI profile does not activate it in the graphical client. Uninstalling
@@ -40,11 +47,11 @@ the bundle does not remove the bridge's separately stored platform credentials.
 For a CLI profile:
 
 ```powershell
-dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.9.tgz
+dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.10.tgz
 dsh --profile demo
 ```
 
-The package downloaded from `agent.guanzhu.me` connects to
+The production package published in Gitea Packages connects to
 `https://agent.guanzhu.me` by default. Local source builds keep
 `http://127.0.0.1:8000`; no Keycloak configuration is required. A release build
 can set `XBOT_DEFAULT_GATEWAY_URL` to its HTTPS platform origin. For another
@@ -62,6 +69,33 @@ For a profile without a default, set `A2A_LLM_PROVIDER` and `A2A_LLM_MODEL`. The
 plugin runs one Agent entry point; it does not require `allowedSkills`,
 `A2A_ALLOWED_SKILLS`, or tool registration. Harness chooses and manages its own
 internal tools.
+
+## Updates inside Harness
+
+Open **Xbot 平台任务 → 插件更新 → 更新源授权**. Create a personal access token in
+[Gitea applications settings](https://gitea.guanzhu.me/user/settings/applications)
+with only `read:package` permission. Its account must be able to read `xbot`
+packages. Paste it once and choose **保存凭据**. The field clears immediately;
+only whether a credential is configured is returned to the settings page.
+Windows stores it with account-bound DPAPI; other systems use a private local
+file. It is separate from platform authorization and never enters Harness's
+ordinary configuration document. **移除凭据** removes only this update credential.
+
+**检查更新** reads the private Generic package registry and release manifest.
+**更新到 <版本>** asks you to confirm that exact version, then downloads and
+verifies the archive's size, SHA-256 and package identity before handing it to
+Harness's native Plugin Manager. Tasks or pending authorization block installation.
+An idle connection pauses new work during installation and resumes afterwards.
+The native installer preserves the bundle's configuration; the plugin does not
+uninstall itself or execute custom package-manager shell commands.
+
+When **更新已安装，等待重启** appears, fully exit and reopen Harness. If the client
+loses the installation reply, use **核对更新结果**. A missing reply is not a
+successful install and does not cause an automatic second installation. The local
+receipt records the target version; after restart, the running version confirms
+whether that update took effect. The exact verified archive remains in the
+profile's private update cache because the native installer can reference it as
+a local file dependency.
 
 ## Platform account authorization
 
@@ -90,8 +124,13 @@ The connection card shows the live state: **已连接**, **需要授权**,
 **等待浏览器授权**, **正在连接**, **连接中断**, or **连接失败**. It also displays the
 platform, device identity, active task count and recent connection/contact times.
 **刷新状态** reads the current host state; a settings save does not imply a
-successful connection. **无法读取状态** means the settings client cannot currently
-read the host service.
+successful connection. A status-read failure means the settings page cannot
+read its local Harness service; it is not evidence that platform authorization
+expired. Enable the plugin and, if it was just installed or updated, fully exit and reopen Harness
+before refreshing. The page hides authorization actions until it can read the
+service again. Cached information is explicitly marked stale. Status requests
+have a cancellation deadline, and retries do not overlap. Diagnostic details
+show only known error codes, never upstream errors or credentials.
 
 Use **重新授权**, then confirm with **打开浏览器授权**, to start fresh consent for
 an idle device. Active tasks prevent reauthorization. While consent is pending,
@@ -230,7 +269,7 @@ is distributed as a versioned tarball, not published to the public npm registry.
 For transport diagnosis without Harness:
 
 ```powershell
-npm install .\xbot-deepseek-harness-a2a-0.1.9.tgz
+npm install .\xbot-deepseek-harness-a2a-0.1.10.tgz
 npx xbot-deepseek-harness-a2a
 # Revoke this diagnostic profile's authorization:
 npx xbot-deepseek-harness-a2a --logout

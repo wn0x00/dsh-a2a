@@ -1,5 +1,6 @@
 import { connectionContribution } from '../src/connection-contract.ts'
 import { createConnectionPanel } from './connection-panel.js'
+import { createUpdatePanel } from './update-panel.js'
 
 // DSH supplies React, its configuration store and native project/model catalogs.
 window.__ModuleLoader__.load({
@@ -8,6 +9,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { Button, Input } = require('@deepseek-ai/dsh-client-ui-primitives')
     const ConnectionPanel = createConnectionPanel(React, Button)
+    const UpdatePanel = createUpdatePanel(React, Button)
     const h = React.createElement
     const fields = [
       'deviceName',
@@ -49,6 +51,7 @@ window.__ModuleLoader__.load({
       loadCatalogs,
       subscribeCatalogs,
       connection,
+      updates,
     }) {
       const snapshot = React.useSyncExternalStore(
         form.subscribe,
@@ -184,6 +187,12 @@ window.__ModuleLoader__.load({
         h('h3', { style: { margin: 0, fontSize: 16 } }, 'Xbot 平台任务'),
         h(ConnectionPanel, {
           connection,
+          disabled: disabled || changed,
+          readOnly: !editable,
+          changed,
+        }),
+        h(UpdatePanel, {
+          updates,
           disabled: disabled || changed,
           readOnly: !editable,
           changed,
@@ -520,17 +529,22 @@ window.__ModuleLoader__.load({
       'remote.agentPresets',
       'remote.permissionPresets',
     ]
-    async function apply(ctx) {
-      const unmountConnection = await ctx.remote.$mount(
-        connectionContribution(require('zod').z),
-      )
+    const installSettings = (ctx) => {
       const configForm = ctx.configForms.get('xbot-a2a')
       const actions = {
         connection: {
-          status: () => ctx.remote.xbotA2a.status(),
+          status: ({ signal } = {}) => ctx.remote.xbotA2a.status(signal),
           connect: () => ctx.remote.xbotA2a.connect(),
           reauthorize: () => ctx.remote.xbotA2a.reauthorize(),
           cancelAuthorization: () => ctx.remote.xbotA2a.cancelAuthorization(),
+          subscribe: (refresh) => ctx.on('connection/reset', refresh),
+        },
+        updates: {
+          status: ({ signal } = {}) => ctx.remote.xbotA2a.updateStatus(signal),
+          check: () => ctx.remote.xbotA2a.checkUpdate(),
+          install: (version) => ctx.remote.xbotA2a.installUpdate(version),
+          saveCredential: (token) => ctx.remote.xbotA2a.setUpdateCredential(token),
+          clearCredential: () => ctx.remote.xbotA2a.clearUpdateCredential(),
           subscribe: (refresh) => ctx.on('connection/reset', refresh),
         },
         form: {
@@ -607,8 +621,22 @@ window.__ModuleLoader__.load({
           ),
         ),
       ]
+      return () => disposers.forEach((dispose) => dispose())
+    }
+    async function apply(ctx) {
+      const unmountConnection = await ctx.remote.$mount(
+        connectionContribution(require('zod').z),
+      )
+      // $mount creates the namespace service but does not grant this plugin
+      // permission to read it. Inject only after mounting to avoid waiting
+      // for a service that this plugin itself must provide.
+      const settings = ctx.inject(
+        [...inject, 'remote.xbotA2a'],
+        installSettings,
+      )
+      await settings
       return async () => {
-        disposers.forEach((dispose) => dispose())
+        await settings.dispose()
         await unmountConnection()
       }
     }

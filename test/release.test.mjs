@@ -99,6 +99,7 @@ test('release builds embed a validated production origin without changing local 
   const productionFile = join(directory, 'production.mjs')
   await writeReleaseDefaults(productionFile, 'https://agent.guanzhu.me/')
   assert.equal((await import(pathToFileURL(productionFile).href)).DEFAULT_GATEWAY, 'https://agent.guanzhu.me')
+  assert.equal((await import(pathToFileURL(productionFile).href)).PLUGIN_VERSION, packageJson.version)
   const localFile = join(directory, 'local.mjs')
   await writeReleaseDefaults(localFile)
   assert.equal((await import(pathToFileURL(localFile).href)).DEFAULT_GATEWAY, 'http://127.0.0.1:8000')

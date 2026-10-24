@@ -6,6 +6,7 @@ const phases = {
     '请在浏览器中确认授权，再返回 Harness。完成设备注册后，此处会自动更新。',
   ],
   connecting: ['正在连接', '正在向平台注册此设备。'],
+  updating: ['正在更新插件', '已暂停接收新任务，更新完成后会恢复连接。'],
   connected: ['已连接', '此设备已授权，可以接收平台任务。'],
   reconnecting: ['连接中断', '暂时无法联络平台，正在自动重试。'],
   authorization_required: [
@@ -22,84 +23,192 @@ const notices = {
   registration_failed: '设备注册未完成，请重试连接。',
 }
 
+const STATUS_TIMEOUT_MS = 8000
+const statusErrors = {
+  'gateway/service-unavailable': 'unavailable',
+  'gateway/method-unavailable': 'unavailable',
+  'gateway/invocation-unavailable': 'unavailable',
+  'gateway/definition-unavailable': 'unavailable',
+  'gateway/binding-invalid': 'incompatible',
+  'gateway/signature-invalid': 'incompatible',
+  'gateway/result-invalid': 'incompatible',
+  'remote-access/denied': 'denied',
+  'gateway/internal': 'connection',
+  'gateway/cancelled': 'connection',
+  'xbot-ui/status-timeout': 'timeout',
+}
+const statusHints = {
+  unavailable:
+    '本机插件的连接组件尚未就绪。请确认插件已启用；若刚更新插件，请完全退出 DeepSeek Harness 后重新打开，再刷新状态。',
+  incompatible:
+    '插件与 Harness 未能正确交换连接信息。请完全退出 DeepSeek Harness 后重新打开；仍无法读取时，请检查两者是否为兼容版本。',
+  denied:
+    '当前客户端没有读取此连接状态的权限。请在本机 Harness 中查看，或联系此设备的所有者。',
+  connection:
+    '暂时无法读取本机 Harness 的连接信息。请确认 Harness 正在运行；若刚更新插件，请完全退出后重新打开，再刷新状态。',
+  timeout:
+    '本机 Harness 未及时响应。已停止本次读取，稍后会自动重试；也可刷新状态。若刚更新插件，请完全退出 Harness 后重新打开。',
+  unknown:
+    '暂时无法确认此设备是否已授权。请确认插件已启用；若刚更新插件，请完全退出 DeepSeek Harness 后重新打开，再刷新状态。',
+}
+function statusFailure(error) {
+  // Only known protocol codes may reach the UI. Raw errors can carry URLs,
+  // request details or secrets and are never rendered or copied.
+  const code =
+    typeof error?.code === 'string' && Object.hasOwn(statusErrors, error.code)
+      ? error.code
+      : null
+  return { code, kind: code ? statusErrors[code] : 'unknown' }
+}
+
+function readStatus(connection, controller) {
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(controller.signal.reason)
+    controller.signal.addEventListener('abort', aborted, { once: true })
+    Promise.resolve()
+      .then(() => connection.status({ signal: controller.signal }))
+      .then(resolve, reject)
+      .finally(() => {
+        controller.signal.removeEventListener('abort', aborted)
+      })
+  })
+}
+
 export function createConnectionPanel(React, Button) {
   const h = React.createElement
   const muted = { margin: 0, opacity: 0.72, fontSize: 12, lineHeight: 1.6 }
   return function ConnectionPanel({ connection, disabled, readOnly, changed }) {
     const [snapshot, setSnapshot] = React.useState(null)
-    const [failed, setFailed] = React.useState(false)
+    const [failure, setFailure] = React.useState(null)
+    const [readAt, setReadAt] = React.useState(null)
+    const [reading, setReading] = React.useState(false)
     const [busy, setBusy] = React.useState(false)
     const [confirm, setConfirm] = React.useState(false)
     const [actionError, setActionError] = React.useState(false)
     const live = React.useRef(false)
     const scope = React.useRef(0)
     const generation = React.useRef(0)
-    const refresh = React.useCallback(async () => {
-      const current = ++generation.current
-      try {
-        const result = await connection.status()
-        if (!result.ok) throw new Error('unavailable')
-        if (live.current && current === generation.current) {
-          setSnapshot(result.value)
-          setFailed(false)
-        }
-      } catch {
-        if (live.current && current === generation.current) setFailed(true)
-      }
-    }, [connection])
+    const reader = React.useRef(null)
+    const acting = React.useRef(false)
+    const refresh = () => reader.current?.refresh() ?? Promise.resolve()
     React.useEffect(() => {
       live.current = true
       scope.current += 1
       let active = true
       let timer
+      let pending = null
+      let failures = 0
       setSnapshot(null)
+      setReadAt(null)
+      setFailure(null)
       setBusy(false)
       setConfirm(false)
       setActionError(false)
-      const tick = async () => {
-        await refresh()
-        if (active) timer = setTimeout(tick, 2000)
+      acting.current = false
+      const read = () => {
+        if (!active) return Promise.resolve()
+        if (pending) return pending.promise
+        clearTimeout(timer)
+        setReading(true)
+        const current = ++generation.current
+        const controller = new AbortController()
+        const deadline = setTimeout(
+          () => controller.abort({ code: 'xbot-ui/status-timeout' }),
+          STATUS_TIMEOUT_MS,
+        )
+        const flight = { controller, promise: null }
+        pending = flight
+        flight.promise = (async () => {
+          try {
+            const result = await readStatus(connection, controller)
+            if (!result?.ok) throw result?.error
+            if (active && current === generation.current) {
+              setSnapshot(result.value)
+              setReadAt(Date.now())
+              setFailure(null)
+              failures = 0
+            }
+          } catch (error) {
+            if (active && current === generation.current) {
+              setFailure(statusFailure(error))
+              setConfirm(false)
+              failures += 1
+            }
+          } finally {
+            clearTimeout(deadline)
+            if (pending === flight) pending = null
+            if (active) {
+              setReading(false)
+              timer = setTimeout(
+                read,
+                failures
+                  ? Math.min(5000 * 2 ** Math.min(failures - 1, 3), 30000)
+                  : 2000,
+              )
+            }
+          }
+        })()
+        return flight.promise
       }
-      void tick()
-      const stop = connection.subscribe(refresh)
+      const currentReader = {
+        refresh: read,
+        invalidate: () => {
+          generation.current += 1
+          pending?.controller.abort({ code: 'gateway/cancelled' })
+        },
+      }
+      reader.current = currentReader
+      void read()
+      const stop = connection.subscribe(read)
       return () => {
         active = false
         live.current = false
         scope.current += 1
         generation.current += 1
         clearTimeout(timer)
+        pending?.controller.abort({ code: 'gateway/cancelled' })
+        if (reader.current === currentReader) reader.current = null
         stop()
       }
-    }, [connection, refresh])
+    }, [connection])
+    const failed = failure !== null
     async function act(action) {
       if (
         (action === 'cancelAuthorization' ? readOnly : disabled) ||
-        busy ||
+        acting.current ||
         failed ||
         !snapshot
       )
         return
+      acting.current = true
       setBusy(true)
       setConfirm(false)
       setActionError(false)
-      generation.current += 1
+      reader.current?.invalidate()
       const currentScope = scope.current
       const current = () => live.current && currentScope === scope.current
       try {
         const result = await connection[action]()
         if (!result.ok) throw new Error('unavailable')
-        if (current()) setSnapshot(result.value)
+        if (current()) {
+          setSnapshot(result.value)
+          setReadAt(Date.now())
+          setFailure(null)
+        }
       } catch {
         if (current()) setActionError(true)
       } finally {
         if (current()) {
           await refresh()
-          if (current()) setBusy(false)
+          if (current()) {
+            acting.current = false
+            setBusy(false)
+          }
         }
       }
     }
     const [label, description] = failed
-      ? ['无法读取状态', '请检查 Harness 连接，然后刷新状态。']
+      ? ['无法获取本机连接状态', statusHints[failure.kind]]
       : snapshot
         ? (phases[snapshot.phase] ?? phases.error)
         : ['读取连接状态…', '正在读取本机连接信息。']
@@ -140,7 +249,7 @@ export function createConnectionPanel(React, Button) {
           { role: 'status', 'aria-live': 'polite', style: { fontSize: 14 } },
           label,
         ),
-        snapshot?.activeTasks > 0
+        !failed && snapshot?.activeTasks > 0
           ? h(
               'span',
               { style: { ...muted, marginLeft: 'auto' } },
@@ -159,20 +268,37 @@ export function createConnectionPanel(React, Button) {
             snapshot.gatewayUrl
               ? h('span', { style: muted }, snapshot.gatewayUrl)
               : null,
-            snapshot.lastContactAt
+            !failed && snapshot.lastContactAt
               ? h(
                   'span',
                   { style: muted },
                   `最近联络 ${new Date(snapshot.lastContactAt).toLocaleString()}`,
                 )
               : null,
-            snapshot.phase === 'authorizing' && snapshot.pendingExpiresAt
+            !failed &&
+              snapshot.phase === 'authorizing' &&
+              snapshot.pendingExpiresAt
               ? h(
                   'span',
                   { style: muted },
                   `请在 ${new Date(snapshot.pendingExpiresAt).toLocaleTimeString()} 前完成本次授权`,
                 )
               : null,
+          )
+        : null,
+      failed && snapshot
+        ? h(
+            'p',
+            { style: muted },
+            `上次状态：${phases[snapshot.phase]?.[0] ?? '未知'}（已过期）${readAt ? ` · 最后读取 ${new Date(readAt).toLocaleString()}` : ''}。当前是否在线尚未确认。`,
+          )
+        : null,
+      failed && failure.code
+        ? h(
+            'details',
+            { style: muted },
+            h('summary', { style: { cursor: 'pointer' } }, '诊断信息'),
+            h('code', { style: { overflowWrap: 'anywhere' } }, failure.code),
           )
         : null,
       !failed && notices[snapshot?.notice]
@@ -186,7 +312,11 @@ export function createConnectionPanel(React, Button) {
       h(
         'div',
         { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
-        !connected && snapshot?.phase !== 'reconnecting'
+        !failed &&
+          snapshot &&
+          !connected &&
+          snapshot.phase !== 'reconnecting' &&
+          snapshot.phase !== 'updating'
           ? h(
               Button,
               {
@@ -198,9 +328,11 @@ export function createConnectionPanel(React, Button) {
               busy ? '正在处理…' : '连接平台',
             )
           : null,
-        snapshot &&
+        !failed &&
+          snapshot &&
           snapshot.phase !== 'authorization_required' &&
-          snapshot.phase !== 'disconnected'
+          snapshot.phase !== 'disconnected' &&
+          snapshot.phase !== 'updating'
           ? h(
               Button,
               {
@@ -212,7 +344,7 @@ export function createConnectionPanel(React, Button) {
               '重新授权',
             )
           : null,
-        snapshot?.phase === 'authorizing'
+        !failed && snapshot?.phase === 'authorizing'
           ? h(
               Button,
               {
@@ -233,19 +365,20 @@ export function createConnectionPanel(React, Button) {
           {
             type: 'button',
             variant: 'ghost',
-            disabled: busy,
+            disabled: reading || busy,
+            'aria-busy': reading,
             onClick: refresh,
           },
           '刷新状态',
         ),
       ),
-      changed
+      !failed && changed
         ? h('p', { style: muted }, '先保存配置，再连接平台或重新授权。')
         : null,
-      snapshot?.activeTasks > 0
+      !failed && snapshot?.activeTasks > 0
         ? h('p', { style: muted }, '任务执行期间不能重新授权，请等待任务结束。')
         : null,
-      confirm
+      !failed && confirm
         ? h(
             'div',
             {

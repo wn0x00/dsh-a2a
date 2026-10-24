@@ -1,8 +1,11 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const localGateway = 'http://127.0.0.1:8000'
+const packageVersion = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+).version
 
 export function normalizeGatewayOrigin(value = localGateway) {
   const url = new URL(value)
@@ -19,7 +22,7 @@ export function normalizeGatewayOrigin(value = localGateway) {
 export async function writeReleaseDefaults(destination, gateway = localGateway) {
   const origin = normalizeGatewayOrigin(gateway)
   await mkdir(dirname(destination), { recursive: true })
-  await writeFile(destination, `// Generated release defaults; no credentials.\nexport const DEFAULT_GATEWAY = ${JSON.stringify(origin)};\n`)
+  await writeFile(destination, `// Generated release defaults; no credentials.\nexport const DEFAULT_GATEWAY = ${JSON.stringify(origin)};\nexport const PLUGIN_VERSION = ${JSON.stringify(packageVersion)};\n`)
   return origin
 }
 

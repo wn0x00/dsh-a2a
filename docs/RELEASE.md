@@ -46,6 +46,32 @@ staging replaces the manifest and removes only this package's previous archive
 recorded in it; unrelated tarballs are preserved. The output directory is
 generated material, not the canonical source repository.
 
+## Gitea Generic package publication
+
+The current standalone distribution is the private `xbot` Generic package
+`deepseek-harness-a2a`. Build with
+`XBOT_DEFAULT_GATEWAY_URL=https://agent.guanzhu.me npm run pack:release`, then
+publish the exact verified tarball and `release-manifest.json` under the package
+version. Upload the manifest last, after the archive is available:
+
+```text
+PUT /api/packages/xbot/generic/deepseek-harness-a2a/<version>/<filename>.tgz
+PUT /api/packages/xbot/generic/deepseek-harness-a2a/<version>/release-manifest.json
+```
+
+Authenticate with a publication credential that can write packages. Do not put
+credentials in Git, command arguments, release files or logs. Link the package
+to the `deepseek-harness-a2a` repository; preserve private organization visibility.
+Gitea package files are immutable: use a new version for a replacement. Download
+both published files with authentication and verify their size, hash, package
+version and intended gateway before reporting a release complete.
+
+End users create a separate token with only `read:package` for the plugin's
+in-app update feature. The updater lists exact matching Generic versions and
+reads the chosen version's manifest and tarball. No platform deployment or
+platform pipeline is required for this publication. Platform synchronization is
+a separate, explicit rollout using the procedure below.
+
 ## Pinned platform snapshot
 
 The platform needs both the source snapshot under
