@@ -5,6 +5,9 @@ import vm from 'node:vm'
 import React from 'react'
 import * as Zod from 'zod'
 import { act, create } from 'react-test-renderer'
+import * as Cordis from '@deepseek-ai/cordis'
+import * as ClientStore from '@deepseek-ai/dsh-client-store'
+import Schema from '@deepseek-ai/schemastery'
 
 const source = await readFile(
   new URL('../dist/client.js', import.meta.url),
@@ -14,7 +17,6 @@ const source = await readFile(
 async function renderConfiguration(t, options = {}) {
   let snapshot = {
     status: 'ready',
-    mode: 'host',
     writable: true,
     revision: 3,
     value: { workingDirectory: 'C:\\Projects\\old' },
@@ -119,7 +121,7 @@ async function renderConfiguration(t, options = {}) {
     configForms: {
       get: (namespace) => {
         assert.equal(namespace, 'xbot-a2a')
-        return form
+        return options.configForm ?? form
       },
     },
     workspaces: {
@@ -476,13 +478,22 @@ for (const snapshot of [
   { status: 'loading' },
   { status: 'unavailable' },
   { writable: false },
-  { mode: 'memory' },
+  { status: 'error' },
+  { status: 'unknown' },
+  { writable: undefined },
+  { writable: 'true' },
 ]) {
   test(`configuration cannot write while ${JSON.stringify(snapshot)}`, async (t) => {
     const page = await renderConfiguration(t, { snapshot })
     assert.equal(page.input().props.disabled, true)
     assert.equal(page.button('选择文件夹').props.disabled, true)
     assert.equal(page.button('保存任务配置').props.disabled, true)
+    assert.equal(page.button('连接平台').props.disabled, true)
+    assert.equal(page.button('检查更新').props.disabled, true)
+    assert.match(
+      page.text(),
+      /正在读取插件配置|暂未提供此插件的配置|无法读取插件配置|没有配置写入权限/,
+    )
     await page.save()
     assert.equal(page.writes.length, 0)
   })
@@ -669,4 +680,123 @@ test('status failure and readonly pending authorization cannot trigger connectio
     connection: { phase: 'authorizing', canCancelAuthorization: true },
   })
   assert.equal(readonly.button('取消本次授权').props.disabled, true)
+})
+
+async function actualConfigForms() {
+  const source = await readFile(
+    new URL(import.meta.resolve('@deepseek-ai/dsh-client-ui-settings/client')),
+    'utf8',
+  )
+  let settings
+  vm.runInNewContext(source, {
+    structuredClone,
+    window: {
+      __ModuleLoader__: {
+        load({ factory }) {
+          settings = factory((name) => {
+            if (name === '@deepseek-ai/cordis') return Cordis
+            assert.equal(name, '@deepseek-ai/dsh-client-store')
+            return ClientStore
+          })
+        },
+      },
+    },
+  })
+  const context = new Cordis.Context()
+  const writes = []
+  let descriptor = {
+    ns: 'xbot-a2a',
+    revision: 1,
+    base: {},
+    user: {},
+    value: { workingDirectory: 'C:\\Projects\\old' },
+    schema: Schema.object({ workingDirectory: Schema.string() }).toJSON(),
+  }
+  let writable = true
+  const remote = await context.plugin({
+    name: 'settings-host-response',
+    apply(ctx) {
+      class Remote extends Cordis.Service {
+        constructor() {
+          super(ctx, 'remote')
+        }
+        $on() {
+          return () => {}
+        }
+      }
+      new Remote()
+      ctx.provide('remote.settings', {
+        describe: async () => ({
+          ok: true,
+          value: { writable, namespaces: [descriptor] },
+        }),
+        mutate: async (namespace, ops, revision) => {
+          assert.equal(namespace, 'xbot-a2a')
+          assert.equal(revision, descriptor.revision)
+          if (!writable) return { ok: false, error: { message: 'read only' } }
+          writes.push(ops)
+          descriptor = {
+            ...descriptor,
+            revision: descriptor.revision + 1,
+            value: {
+              ...descriptor.value,
+              ...Object.fromEntries(ops.map((op) => [op.path[0], op.value])),
+            },
+          }
+          return { ok: true, value: descriptor }
+        },
+      })
+    },
+  })
+  const provider = await context.plugin({
+    name: 'actual-sdk-config-forms',
+    ...settings,
+  })
+  const forms = context.get('configForms')
+  const form = forms.get('xbot-a2a')
+  await forms.describe().ensure()
+  return {
+    form,
+    writes,
+    readonly: async () => {
+      writable = false
+      await forms.describe().load()
+    },
+    dispose: async () => {
+      await provider.dispose()
+      await remote.dispose()
+    },
+  }
+}
+
+test('actual rc3 ConfigForms snapshots enable the published page without a fictional mode field', async (t) => {
+  const sdk = await actualConfigForms()
+  const snapshot = sdk.form.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  assert.equal(snapshot.writable, true)
+  assert.equal(Object.hasOwn(snapshot, 'mode'), false)
+  const page = await renderConfiguration(t, { configForm: sdk.form })
+  t.after(sdk.dispose)
+  assert.equal(page.input().props.disabled, false)
+  assert.equal(page.button('连接平台').props.disabled, false)
+  assert.equal(page.button('检查更新').props.disabled, false)
+  await act(async () => {
+    await page.button('连接平台').props.onClick()
+  })
+  assert.deepEqual(page.connectionCalls, ['connect'])
+  assert.match(page.text(), /等待浏览器授权/)
+  await page.edit('C:\\Projects\\sdk-verified')
+  await page.save()
+  assert.equal(sdk.writes.length, 1)
+  assert.equal(
+    sdk.form.getSnapshot().value.workingDirectory,
+    'C:\\Projects\\sdk-verified',
+  )
+  await act(async () => {
+    await sdk.readonly()
+  })
+  assert.equal(page.input().props.disabled, true)
+  assert.equal(page.button('取消本次授权').props.disabled, true)
+  assert.equal(page.button('检查更新').props.disabled, true)
+  assert.match(page.text(), /当前连接没有配置写入权限/)
 })

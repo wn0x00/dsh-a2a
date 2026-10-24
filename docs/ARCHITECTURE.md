@@ -35,7 +35,11 @@ cancellation; signals do not become wire arguments. Strict snapshot codecs
 validate both host output and client input. `src/connection-state.ts` defines the public status projection:
 connection phase, device identity, task count and timestamps, without tokens,
 PKCE state or stored credentials. The settings page reads live bridge state;
-saved configuration alone is not proof of a working connection. If local status
+saved configuration alone is not proof of a working connection. Configuration editing
+and the associated controls use the public `ConfigForm` snapshot
+(`status === "ready"` and `writable === true`). That snapshot has no `mode` field.
+Tests load the real settings service and snapshot store before mounting the
+plugin page, covering the Host contract instead of adding fictitious fields. If local status
 is unavailable, management actions are hidden and retained snapshots are marked
 stale. Recovery instructions distinguish local service availability from
 platform authorization. Read timeouts abort the carrier; polling and manual
@@ -129,6 +133,7 @@ Captures: [connected](assets/settings-connected.png),
 [reauthorization confirmation](assets/settings-reauthorize.png), and
 [mobile layout](assets/settings-mobile.png),
 [status recovery](assets/settings-status-unavailable.png),
+[ready to connect](assets/settings-connect-ready.png),
 [plugin updates](assets/settings-update.png),
 [restart required](assets/settings-update-restart.png), and
 [update mobile layout](assets/settings-update-mobile.png). These use the real settings
