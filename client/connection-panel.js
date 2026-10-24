@@ -77,7 +77,13 @@ function readStatus(connection, controller) {
 export function createConnectionPanel(React, Button) {
   const h = React.createElement
   const muted = { margin: 0, opacity: 0.72, fontSize: 12, lineHeight: 1.6 }
-  return function ConnectionPanel({ connection, disabled, readOnly, changed }) {
+  return function ConnectionPanel({
+    connection,
+    disabled,
+    readOnly,
+    changed,
+    disabledReason,
+  }) {
     const [snapshot, setSnapshot] = React.useState(null)
     const [failure, setFailure] = React.useState(null)
     const [readAt, setReadAt] = React.useState(null)
@@ -219,6 +225,20 @@ export function createConnectionPanel(React, Button) {
         ? '#ba5341'
         : '#92702a'
     const blocked = disabled || busy || failed || !snapshot
+    const actionHint =
+      disabledReason ??
+      (readOnly
+        ? '当前连接没有操作权限，请使用可管理本机插件的连接。'
+        : changed
+          ? '先保存或取消配置修改，再连接平台或重新授权。'
+          : busy
+            ? '正在处理连接请求，请稍候。'
+            : !snapshot?.canConnect &&
+                ['authorization_required', 'disconnected', 'error'].includes(
+                  snapshot?.phase,
+                )
+              ? 'Harness 暂未允许发起连接，请稍后刷新状态。'
+              : null)
     return h(
       'section',
       {
@@ -372,8 +392,8 @@ export function createConnectionPanel(React, Button) {
           '刷新状态',
         ),
       ),
-      !failed && changed
-        ? h('p', { style: muted }, '先保存配置，再连接平台或重新授权。')
+      !failed && actionHint
+        ? h('p', { role: 'status', style: muted }, actionHint)
         : null,
       !failed && snapshot?.activeTasks > 0
         ? h('p', { style: muted }, '任务执行期间不能重新授权，请等待任务结束。')

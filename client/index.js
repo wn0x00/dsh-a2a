@@ -85,10 +85,17 @@ window.__ModuleLoader__.load({
           stop()
         }
       }, [loadCatalogs, subscribeCatalogs])
-      const editable =
-        snapshot.status === 'ready' &&
-        snapshot.writable &&
-        snapshot.mode === 'host'
+      const editable = snapshot.status === 'ready' && snapshot.writable === true
+      const configurationReason =
+        snapshot.status === 'loading'
+          ? '正在读取插件配置，读取完成后可操作。'
+          : snapshot.status === 'unavailable'
+            ? 'Harness 暂未提供此插件的配置，请检查插件是否启用。'
+            : snapshot.status !== 'ready'
+              ? '暂时无法读取插件配置，请等待配置恢复后再操作。'
+              : snapshot.writable !== true
+                ? '当前连接没有配置写入权限，连接和更新操作暂不可用。'
+                : null
       const value = draft?.value ?? saved
       const changed = fields.some((field) => value[field] !== saved[field])
       const update = (patch) => {
@@ -190,6 +197,13 @@ window.__ModuleLoader__.load({
           disabled: disabled || changed,
           readOnly: !editable,
           changed,
+          disabledReason:
+            configurationReason ??
+            (busy === 'save'
+              ? '正在保存配置，请等待保存完成。'
+              : busy === 'pick'
+                ? '正在选择工作区，请完成或取消选择后再操作。'
+                : null),
         }),
         h(UpdatePanel, {
           updates,
@@ -469,15 +483,9 @@ window.__ModuleLoader__.load({
               )
             : null,
         ),
-        snapshot.status === 'loading'
-          ? h('p', { role: 'status', style: muted }, '正在读取配置…')
-          : !editable
-            ? h(
-                'p',
-                { role: 'status', style: muted },
-                '请在本机 Harness 中启用此插件后配置任务。',
-              )
-            : null,
+        configurationReason
+          ? h('p', { role: 'status', style: muted }, configurationReason)
+          : null,
         h(
           'div',
           { style: { display: 'flex', gap: 8 } },
@@ -543,7 +551,8 @@ window.__ModuleLoader__.load({
           status: ({ signal } = {}) => ctx.remote.xbotA2a.updateStatus(signal),
           check: () => ctx.remote.xbotA2a.checkUpdate(),
           install: (version) => ctx.remote.xbotA2a.installUpdate(version),
-          saveCredential: (token) => ctx.remote.xbotA2a.setUpdateCredential(token),
+          saveCredential: (token) =>
+            ctx.remote.xbotA2a.setUpdateCredential(token),
           clearCredential: () => ctx.remote.xbotA2a.clearUpdateCredential(),
           subscribe: (refresh) => ctx.on('connection/reset', refresh),
         },

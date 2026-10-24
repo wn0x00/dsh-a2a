@@ -16,29 +16,31 @@ diagnostic; installing that executable alone does not enable a Harness plugin.
 
 ## Install or update
 
-Download version **0.1.10** from
+Download version **0.1.11** from
 [Gitea Packages](https://gitea.guanzhu.me/xbot/-/packages?q=deepseek-harness-a2a).
 Sign in with an account that can read the private `xbot` organization packages.
-Choose `xbot-deepseek-harness-a2a-0.1.10.tgz`; `release-manifest.json` records its
+Choose `xbot-deepseek-harness-a2a-0.1.11.tgz`; `release-manifest.json` records its
 size and SHA-256. Plugin packages are released independently of platform CI/CD.
 The platform's pinned download may therefore be an older version.
 
-The first update from 0.1.9 is manual. From 0.1.10 onward, **Xbot 平台任务 →
+The first update from 0.1.9 or 0.1.10 is manual. Version 0.1.10 could disable
+its own update controls because it checked a settings field Harness does not
+provide; 0.1.11 fixes that check. From 0.1.11 onward, **Xbot 平台任务 →
 插件更新** can check and install newer Gitea packages after you configure a
 read-only credential. It never installs updates automatically in the background.
 
 In the Windows graphical client:
 
-1. Open **Plugins**. For the first manual upgrade from 0.1.9, uninstall the old
+1. Open **Plugins**. For the first manual upgrade from 0.1.9 or 0.1.10, uninstall the old
    version before adding the new archive through the graphical installer.
 2. Select **Add plugin**. In **包名或地址**, enter the downloaded file's full
-   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.10.tgz`.
+   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.11.tgz`.
 3. In **安装源**, select the npm official registry (`https://registry.npmjs.org/`)
    or a working default registry. A plugin `.tgz` URL belongs in **包名或地址**,
    never in **安装源** / `--registry`.
 4. Install, then click **立即启用 / Enable now**. Successful pnpm output only
    confirms installation; the graphical client installs bundles disabled.
-5. Fully exit and restart Harness. Check the installed version is **0.1.10**.
+5. Fully exit and restart Harness. Check the installed version is **0.1.11**.
 
 Perform these steps in the same graphical client/profile. An installation in a
 separate CLI profile does not activate it in the graphical client. Uninstalling
@@ -47,7 +49,7 @@ the bundle does not remove the bridge's separately stored platform credentials.
 For a CLI profile:
 
 ```powershell
-dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.10.tgz
+dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.11.tgz
 dsh --profile demo
 ```
 
@@ -131,6 +133,12 @@ before refreshing. The page hides authorization actions until it can read the
 service again. Cached information is explicitly marked stale. Status requests
 have a cancellation deadline, and retries do not overlap. Diagnostic details
 show only known error codes, never upstream errors or credentials.
+
+Connection and update controls use the real Harness configuration readiness and
+`writable` flag. A disabled connection action explains whether the configuration
+is loading, read-only, unsaved or busy. Saving or discarding configuration changes
+restores the action when the Host permits it; a read-only configuration remains
+read-only. Local owner checks still apply to every management RPC.
 
 Use **重新授权**, then confirm with **打开浏览器授权**, to start fresh consent for
 an idle device. Active tasks prevent reauthorization. While consent is pending,
@@ -269,7 +277,7 @@ is distributed as a versioned tarball, not published to the public npm registry.
 For transport diagnosis without Harness:
 
 ```powershell
-npm install .\xbot-deepseek-harness-a2a-0.1.10.tgz
+npm install .\xbot-deepseek-harness-a2a-0.1.11.tgz
 npx xbot-deepseek-harness-a2a
 # Revoke this diagnostic profile's authorization:
 npx xbot-deepseek-harness-a2a --logout

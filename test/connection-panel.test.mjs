@@ -105,10 +105,10 @@ test('a stale authorization action cannot refresh or overwrite a replacement con
   })
 })
 
-async function mountPanel(t, source) {
+async function mountPanel(t, source, props = {}) {
   let view
   await act(async () => {
-    view = create(React.createElement(Panel, { connection: source }))
+    view = create(React.createElement(Panel, { connection: source, ...props }))
   })
   t.after(async () => {
     await act(async () => {
@@ -359,4 +359,44 @@ test('updating pauses connection actions while keeping status refresh available'
   assert.equal(page.button('重新授权'), undefined)
   assert.equal(page.button('取消本次授权'), undefined)
   assert.ok(page.button('刷新状态'))
+})
+
+for (const [props, message] of [
+  [{ disabled: true, readOnly: true }, /当前连接没有操作权限/],
+  [
+    {
+      disabled: true,
+      readOnly: true,
+      disabledReason: '正在读取插件配置，读取完成后可操作。',
+    },
+    /正在读取插件配置/,
+  ],
+  [{ disabled: true, changed: true }, /先保存或取消配置修改/],
+  [
+    { disabled: true, disabledReason: '正在保存配置，请等待保存完成。' },
+    /正在保存配置/,
+  ],
+]) {
+  test(`a disabled connection action explains ${JSON.stringify(props)}`, async (t) => {
+    const page = await mountPanel(
+      t,
+      connection(async () => ({ ok: true, value: snapshot })),
+      props,
+    )
+    assert.equal(page.button('连接平台').props.disabled, true)
+    assert.match(page.text(), message)
+    assert.doesNotMatch(page.text(), /重装|重新安装/)
+  })
+}
+
+test('a host refusal to start authorization is explained without suggesting repeated authorization', async (t) => {
+  const page = await mountPanel(
+    t,
+    connection(async () => ({
+      ok: true,
+      value: { ...snapshot, canConnect: false },
+    })),
+  )
+  assert.equal(page.button('连接平台').props.disabled, true)
+  assert.match(page.text(), /Harness 暂未允许发起连接，请稍后刷新状态/)
 })
