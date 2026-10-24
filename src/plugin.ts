@@ -1,6 +1,7 @@
 import { GatewayClient } from './gateway.js'
 import { OAuthClient, OAuthLoginRequiredError } from './pkce.js'
 import { TaskRunner } from './task-runner.js'
+import { ConnectionActionError, type ConnectionNotice, type ConnectionPhase, type ConnectionSnapshot } from './connection-state.js'
 import type { BridgeConfig, GatewayEvent, HarnessContext, HarnessSkill } from './types.js'
 import { A2A_MESSAGE_CAPABILITY } from './types.js'
 
@@ -13,6 +14,29 @@ export class A2ABridge {
   private loopPromise: Promise<void> | undefined
   private lastEventId: string | undefined
   private connecting: Promise<void> | undefined
+  private completing: Promise<void> | undefined
+  private phase: ConnectionPhase = 'disconnected'
+  private notice: ConnectionNotice = 'none'
+  private lastConnectedAt: number | null = null
+  private lastContactAt: number | null = null
+  private restoreAfterAuthorization = false
+  private authorizationTimer: ReturnType<typeof setTimeout> | undefined
+  private disposed = false
+
+  status(): ConnectionSnapshot {
+    const activeTasks = this.runner.activeTaskIds().length
+    const busy = Boolean(this.connecting) || ['starting', 'authorizing', 'connecting', 'stopped'].includes(this.phase)
+    return {
+      phase: this.phase, notice: this.notice,
+      gatewayUrl: new URL(this.config.gatewayUrl).origin,
+      deviceId: this.config.device.id, deviceName: this.config.device.name,
+      activeTasks, pendingExpiresAt: this.oauth.pendingExpiresAt(),
+      lastConnectedAt: this.lastConnectedAt, lastContactAt: this.lastContactAt,
+      canConnect: !busy && !this.disposed && !this.loopPromise,
+      canReauthorize: !busy && !this.disposed && activeTasks === 0,
+      canCancelAuthorization: !this.disposed && !this.connecting && !this.completing && this.phase === 'authorizing' && this.oauth.pendingExpiresAt() !== null,
+    }
+  }
 
   constructor(
     private readonly ctx: HarnessContext,
@@ -51,33 +75,110 @@ export class A2ABridge {
 
   /** Restore saved credentials without opening a browser on startup/revocation. */
   async start(): Promise<void> {
+    if (this.loopPromise) return
+    if (this.connecting || this.completing || ['starting', 'connecting', 'authorizing'].includes(this.phase)) {
+      throw new ConnectionActionError('busy')
+    }
+    this.disposed = false
+    this.phase = 'starting'
     try {
       await this.registerConnection()
     } catch (error) {
-      if (!(error instanceof OAuthLoginRequiredError)) throw error
+      if (!(error instanceof OAuthLoginRequiredError)) {
+        this.phase = 'error'
+        throw error
+      }
+      this.phase = 'authorization_required'
       this.log('info', 'Connect this device from Harness Settings → Xbot platform tasks')
     }
   }
 
   /** The local Settings button or explicitly invoked diagnostic starts consent. */
   async connect(): Promise<void> {
+    if (this.disposed) throw new ConnectionActionError('unavailable')
+    if (this.phase === 'authorizing') return
     if (this.connecting) return this.connecting
+    if (this.completing || ['starting', 'connecting'].includes(this.phase)) throw new ConnectionActionError('busy')
     this.connecting = (async () => {
+      this.notice = 'none'
       try {
         await this.registerConnection()
       } catch (error) {
-        if (!(error instanceof OAuthLoginRequiredError)) throw error
-        await this.oauth.beginAuthorization(true)
-        this.log('info', 'Browser authorization opened; approve this device in the platform')
+        if (!(error instanceof OAuthLoginRequiredError)) {
+          this.phase = 'error'
+          this.notice = 'registration_failed'
+          throw error
+        }
+        await this.requestAuthorization(false)
       }
     })()
     try { await this.connecting } finally { this.connecting = undefined }
   }
 
+  /** Pause an idle connection, retaining its grant until replacement succeeds. */
+  async reauthorize(): Promise<void> {
+    if (this.disposed) throw new ConnectionActionError('unavailable')
+    if (this.connecting || this.completing || ['starting', 'connecting', 'authorizing'].includes(this.phase) || this.runner.activeTaskIds().length) {
+      throw new ConnectionActionError('busy')
+    }
+    this.connecting = this.requestAuthorization(true)
+    try { await this.connecting } finally { this.connecting = undefined }
+  }
+
+  private async requestAuthorization(replace: boolean): Promise<void> {
+    this.phase = 'authorizing'
+    this.notice = 'none'
+    try {
+      if (replace) await this.stopPolling()
+      this.restoreAfterAuthorization = replace && await this.oauth.hasCredentials()
+      await this.oauth.beginAuthorization(true)
+      if (this.disposed) {
+        await this.oauth.clearPendingAuthorization()
+        return
+      }
+      const expiresAt = this.oauth.pendingExpiresAt()
+      clearTimeout(this.authorizationTimer)
+      this.authorizationTimer = setTimeout(() => {
+        void this.expireAuthorization().catch(() => undefined)
+      }, Math.max(1, (expiresAt ?? Date.now() + 600_000) - Date.now()))
+      this.authorizationTimer.unref()
+      this.log('info', 'Browser authorization opened; approve this device in the platform')
+    } catch (error) {
+      await this.restoreConnection('authorization_failed')
+      throw error
+    }
+  }
+
+  async expireAuthorization(): Promise<void> {
+    if (this.phase !== 'authorizing' || this.completing) return
+    await this.oauth.clearPendingAuthorization()
+    await this.restoreConnection('authorization_timeout')
+  }
+
+  private async restoreConnection(notice: ConnectionNotice): Promise<void> {
+    clearTimeout(this.authorizationTimer)
+    this.notice = notice
+    const restore = this.restoreAfterAuthorization
+    this.restoreAfterAuthorization = false
+    if (this.disposed) return
+    if (!restore) {
+      this.phase = 'authorization_required'
+      return
+    }
+    try { await this.registerConnection() } catch (error) {
+      this.phase = error instanceof OAuthLoginRequiredError ? 'authorization_required' : 'error'
+    }
+  }
+
   private async registerConnection(): Promise<void> {
     if (this.loopPromise) return
+    if (this.disposed) throw new ConnectionActionError('unavailable')
+    this.phase = 'connecting'
     await this.oauth.accessToken()
     await this.gateway.register(this.allowedSkills)
+    if (this.disposed) return
+    this.phase = 'connected'
+    this.lastConnectedAt = this.lastContactAt = Date.now()
     // Register for both pull and SSE transports.  Registration binds the stable
     // device id to the OAuth subject before the first task claim; pull mode used
     // to skip it and therefore required an out-of-band database row.
@@ -87,10 +188,39 @@ export class A2ABridge {
 
   /** Complete the callback received by the host's localhost redirect server. */
   async completeAuthorization(code: string, state: string): Promise<void> {
-    await this.oauth.completeAuthorization(code, state)
+    if (this.disposed) throw new ConnectionActionError('unavailable')
+    if (this.completing) throw new ConnectionActionError('busy')
+    // Validate before disarming the deadline: a forged callback cannot alter
+    // the real pending request. Once exchange starts it owns completion.
+    this.oauth.validateAuthorizationState(state)
+    clearTimeout(this.authorizationTimer)
+    this.completing = this.finishAuthorization(code, state)
+    try { await this.completing } finally { this.completing = undefined }
+  }
+
+  private async finishAuthorization(code: string, state: string): Promise<void> {
+    try {
+      await this.oauth.completeAuthorization(code, state)
+    } catch (error) {
+      // A forged or stale callback must not cancel the real pending request.
+      if (this.oauth.pendingExpiresAt() === null) {
+        await this.restoreConnection('authorization_failed')
+      }
+      throw error
+    }
+    clearTimeout(this.authorizationTimer)
+    // The platform atomically revoked the old grant at code exchange. It is no
+    // longer a usable fallback, even if subsequent device registration fails.
+    this.restoreAfterAuthorization = false
+    this.notice = 'none'
+    if (this.disposed) throw new ConnectionActionError('unavailable')
     // A successful token exchange alone is not a connected device. Registration
     // errors must reach the callback page, never start another consent silently.
-    await this.registerConnection()
+    try { await this.registerConnection() } catch (error) {
+      this.phase = error instanceof OAuthLoginRequiredError ? 'authorization_required' : 'error'
+      this.notice = 'registration_failed'
+      throw error
+    }
   }
 
   async updateIdentity(identity: { name: string; description: string }): Promise<void> {
@@ -101,14 +231,25 @@ export class A2ABridge {
     try {
       await this.gateway.register(this.allowedSkills)
     } catch (error) {
-      if (error instanceof OAuthLoginRequiredError) await this.stop()
+      if (error instanceof OAuthLoginRequiredError) {
+        await this.stopPolling()
+        this.phase = 'authorization_required'
+      }
       throw error
     }
   }
 
   async cancelAuthorization(state: string): Promise<void> {
     await this.oauth.cancelAuthorization(state)
+    await this.restoreConnection('authorization_denied')
     this.log('info', 'Device authorization was declined; connect again from Harness settings')
+  }
+
+  async cancelPendingAuthorization(): Promise<void> {
+    if (this.disposed) throw new ConnectionActionError('unavailable')
+    if (!this.status().canCancelAuthorization) throw new ConnectionActionError('busy')
+    await this.oauth.clearPendingAuthorization()
+    await this.restoreConnection('authorization_denied')
   }
 
   async logout(): Promise<void> {
@@ -117,6 +258,15 @@ export class A2ABridge {
   }
 
   async stop(): Promise<void> {
+    this.disposed = true
+    clearTimeout(this.authorizationTimer)
+    await this.completing?.catch(() => undefined)
+    await this.oauth.clearPendingAuthorization()
+    await this.stopPolling()
+    this.phase = 'stopped'
+  }
+
+  private async stopPolling(): Promise<void> {
     this.stopController?.abort()
     await this.runner.stop()
     const loop = this.loopPromise
@@ -142,6 +292,9 @@ export class A2ABridge {
             if (task.state === 'TASK_STATE_CANCELED') this.runner.cancel(taskId)
           }))
           const envelope = await this.gateway.nextTask(stopController.signal)
+          if (stopController.signal.aborted) break
+          this.phase = 'connected'
+          this.lastContactAt = Date.now()
           if (envelope) this.dispatch({ type: 'task', envelope })
           await this.sleep(
             envelope ? Math.min(delay, 250) : delay,
@@ -150,6 +303,9 @@ export class A2ABridge {
           continue
         }
         for await (const event of this.gateway.events(stopController.signal, this.lastEventId)) {
+          if (stopController.signal.aborted) break
+          this.phase = 'connected'
+          this.lastContactAt = Date.now()
           if (event.eventId) this.lastEventId = event.eventId
           this.dispatch(event)
           if (event.type === 'task') {
@@ -169,10 +325,12 @@ export class A2ABridge {
           await this.runner.stop()
           this.loopPromise = undefined
           this.stopController = undefined
+          this.phase = 'authorization_required'
           this.log('info', 'Device authorization expired or was revoked; connect again from Harness Settings → Xbot platform tasks')
           return
         }
         if (!stopController.signal.aborted) {
+          this.phase = 'reconnecting'
           this.log('warn', 'A2A gateway connection closed; reconnecting', {
             error: error instanceof Error ? error.message : String(error),
           })

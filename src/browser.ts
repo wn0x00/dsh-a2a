@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 
 /** Open a URL using the host operating system's default browser. */
-export function openAuthorizationUrl(url: string): void {
+export async function openAuthorizationUrl(url: string, spawnBrowser: typeof spawn = spawn): Promise<void> {
   // Do not route Windows URLs through `cmd /c start`: the query string has
   // ampersands, which cmd can interpret as command separators. Explorer can
   // also treat an http URL as a filesystem location on some Windows setups.
@@ -11,12 +11,20 @@ export function openAuthorizationUrl(url: string): void {
     ? `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\rundll32.exe`
     : process.platform === 'darwin' ? 'open' : 'xdg-open'
   const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', url] : [url]
-  const child = spawn(command, args, { detached: true, stdio: 'ignore' })
-  child.once('error', () => {
-    console.log(`Open this URL in a browser:\n${url}`)
+  const child = spawnBrowser(command, args, { detached: true, stdio: 'ignore' })
+  await new Promise<void>((resolve, reject) => {
+    // Some handlers stay alive with the browser. A launched process is only
+    // an authorization attempt; the settings page still waits for callback.
+    const timer = setTimeout(resolve, 1500)
+    child.once('error', () => {
+      clearTimeout(timer)
+      reject(new Error('The system browser could not be opened'))
+    })
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve()
+      else reject(new Error('The system browser could not be opened'))
+    })
+    child.unref()
   })
-  child.unref()
-  // Always print a copyable URL. This is useful when the Harness process has no
-  // GUI or when the browser is running on another Windows desktop.
-  console.log(`OAuth authorization URL:\n${url}`)
 }

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { createServer } from 'node:net'
+import { OAuthClient } from '../dist/pkce.js'
 import { join } from 'node:path'
 import test from 'node:test'
 
@@ -420,4 +422,62 @@ test('plugin unload releases profile ownership after a retained session close fa
   assert.equal(calls.disposed.length, 1)
   const release = await lockProfile(directory)
   await release()
+})
+
+test('host unload fences a slow callback before draining its HTTP response', async (t) => {
+  const { root, workspace } = await fixture(t)
+  const { ctx } = host(workspace)
+  const socket = createServer()
+  await new Promise((resolve) => socket.listen(0, '127.0.0.1', resolve))
+  const port = socket.address().port
+  await new Promise((resolve) => socket.close(resolve))
+  const redirectUri = `http://127.0.0.1:${port}/oauth/callback`
+  const gatewayUrl = 'https://platform.example'
+  let cleanup, bridge, ready, state, exchangeStarted, finishExchange
+  let registrations = 0
+  const started = new Promise((resolve) => { ready = resolve })
+  const exchanging = new Promise((resolve) => { exchangeStarted = resolve })
+  const exchangeGate = new Promise((resolve) => { finishExchange = resolve })
+  const nativeFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).startsWith(redirectUri)) return nativeFetch(url, init)
+    if (String(url).endsWith('/metadata')) return Response.json({ authorization_endpoint: `${gatewayUrl}/authorize`, token_endpoint: `${gatewayUrl}/token` })
+    if (String(url).endsWith('/requests')) {
+      state = JSON.parse(init.body).state
+      return Response.json({ authorization_url: `${gatewayUrl}/authorize?request_id=fixture`, expires_in: 600 })
+    }
+    if (String(url).endsWith('/token')) {
+      exchangeStarted()
+      await exchangeGate
+      return Response.json({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 })
+    }
+    if (String(url).endsWith('/devices/register')) registrations++
+    return new Response(null, { status: 204 })
+  })
+  const originalStart = A2ABridge.prototype.start
+  t.mock.method(A2ABridge.prototype, 'start', async function () {
+    bridge = this
+    await originalStart.call(this)
+    ready()
+  })
+  const begin = OAuthClient.prototype.beginAuthorization
+  t.mock.method(OAuthClient.prototype, 'beginAuthorization', async function (...args) {
+    this.config.openAuthorizationUrl = () => undefined
+    return begin.apply(this, args)
+  })
+  ctx.effect = (effect) => { cleanup = effect() }
+  apply(ctx, { gatewayUrl, profile: 'slow-callback-shutdown', storageDirectory: join(root, 'credentials'), workingDirectory: workspace, redirectUri })
+  await started
+  await bridge.connect()
+  const callback = nativeFetch(`${redirectUri}?code=fixture&state=${encodeURIComponent(state)}`)
+  await exchanging
+  const unloading = cleanup()
+  await Promise.resolve()
+  finishExchange()
+  const response = await callback
+  await response.text()
+  await unloading
+  assert.notEqual(response.status, 200)
+  assert.equal(bridge.status().phase, 'stopped')
+  assert.equal(registrations, 0)
 })

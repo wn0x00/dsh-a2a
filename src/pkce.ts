@@ -72,6 +72,25 @@ export class OAuthClient {
 
   private readonly fetchImpl: typeof globalThis.fetch
 
+  pendingExpiresAt(): number | null {
+    return this.pending?.expiresAt ?? null
+  }
+
+  validateAuthorizationState(state: string): void {
+    if (!this.pending || this.pending.state !== state || this.pending.expiresAt <= Date.now()) {
+      throw new Error('OAuth state is missing or does not match')
+    }
+  }
+
+  async hasCredentials(): Promise<boolean> {
+    return Boolean(await this.store.get())
+  }
+
+  async clearPendingAuthorization(): Promise<void> {
+    this.pending = undefined
+    await this.config.authorizationCompleted?.()
+  }
+
   async beginAuthorization(restart = false): Promise<AuthorizationRequest> {
     if (restart && this.pending) {
       this.pending = undefined
@@ -137,7 +156,9 @@ export class OAuthClient {
     })
     let tokens: TokenSet
     try {
-      tokens = await this.exchange(body)
+      // A refused replacement code must not erase the still-valid old grant.
+      // Only refresh-token rejection proves that the stored grant is invalid.
+      tokens = await this.exchange(body, false)
     } catch (error) {
       await this.config.authorizationCompleted?.()
       throw error
@@ -225,7 +246,7 @@ export class OAuthClient {
     return false
   }
 
-  private async exchange(body: URLSearchParams): Promise<TokenSet> {
+  private async exchange(body: URLSearchParams, clearRejectedCredentials = true): Promise<TokenSet> {
     const response = await this.fetchImpl(this.config.tokenEndpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -234,7 +255,7 @@ export class OAuthClient {
     if (!response.ok) {
       const payload = await response.json().catch(() => ({})) as { error?: string }
       if (response.status === 401 || payload.error === 'invalid_grant') {
-        await this.store.clear()
+        if (clearRejectedCredentials) await this.store.clear()
         throw new OAuthLoginRequiredError()
       }
       throw new Error(`OAuth token exchange failed (${response.status})`)

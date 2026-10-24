@@ -1,7 +1,11 @@
-import { copyFile, mkdir } from 'node:fs/promises'
+import { build } from 'esbuild'
+import { fileURLToPath } from 'node:url'
 
-await mkdir(new URL('../dist/', import.meta.url), { recursive: true })
-await copyFile(
-  new URL('../client/index.js', import.meta.url),
-  new URL('../dist/client.js', import.meta.url),
-)
+await build({
+  entryPoints: [fileURLToPath(new URL('../client/index.js', import.meta.url))],
+  outfile: fileURLToPath(new URL('../dist/client.js', import.meta.url)),
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2022',
+})
