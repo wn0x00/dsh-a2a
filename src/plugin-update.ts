@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/pr
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
+import type { AutomaticUpdateStatus } from './automatic-updates.js'
 
 export const UPDATE_PACKAGE = '@guanzhu.me/dsh-a2a'
 const PACKAGE_BASENAME = 'dsh-a2a'
@@ -27,6 +28,7 @@ export type PluginUpdateSnapshot = {
   error: PluginUpdateError | null
   restartReason: string | null
   canInstall: boolean
+  automatic?: AutomaticUpdateStatus
 }
 
 export type NativePluginChangeResult = {
@@ -63,8 +65,8 @@ export type PluginUpdaterOptions = {
 }
 export type PluginUpdater = {
   status(): PluginUpdateSnapshot
-  check(): Promise<PluginUpdateSnapshot>
-  install(expectedVersion: string): Promise<PluginUpdateSnapshot>
+  check(stableOnly?: boolean): Promise<PluginUpdateSnapshot>
+  install(expectedVersion: string, permitted?: () => boolean): Promise<PluginUpdateSnapshot>
 }
 
 /** A frozen registry release: exact tarball plus its npm sha512 integrity. */
@@ -144,13 +146,14 @@ function releaseFrom(version: unknown, dist: unknown): RegistryRelease {
 }
 
 /** Pick the highest strictly versioned release in the registry document. */
-function latestRelease(document: unknown): RegistryRelease | undefined {
+function latestRelease(document: unknown, stableOnly = false): RegistryRelease | undefined {
   if (!document || typeof document !== 'object' || Array.isArray(document)) throw new UpdateFailure('invalid_manifest')
   const versions = (document as Record<string, unknown>).versions
   if (!versions || typeof versions !== 'object' || Array.isArray(versions)) throw new UpdateFailure('invalid_manifest')
   let newest: RegistryRelease | undefined
   for (const [version, entry] of Object.entries(versions as Record<string, unknown>)) {
     if (!validVersion(version)) continue
+    if (stableOnly && VERSION.exec(version)![4]) continue
     if (!entry || typeof entry !== 'object') continue
     const candidate = releaseFrom(version, (entry as Record<string, unknown>).dist)
     if (!newest || comparePluginVersions(candidate.version, newest.version) > 0) newest = candidate
@@ -303,12 +306,12 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
     } finally { await rm(temporary, { force: true }) }
     receipt = value
   }
-  const checkRegistry = async () => {
+  const checkRegistry = async (stableOnly: boolean) => {
     release = undefined
     const bytes = await fetchBytes(UPDATE_METADATA_URL, MAX_METADATA_BYTES, options)
     let parsed: unknown
     try { parsed = JSON.parse(bytes.toString()) } catch { throw new UpdateFailure('invalid_manifest') }
-    const found = latestRelease(parsed)
+    const found = latestRelease(parsed, stableOnly)
     if (!found || comparePluginVersions(found.version, options.currentVersion) <= 0) {
       snapshot = { ...snapshot, phase: 'current', latestVersion: null,
         checkedAt: Date.now(), error: null, restartReason: null }
@@ -322,7 +325,7 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
   }
   return {
     status,
-    async check() {
+    async check(stableOnly = false) {
       if (busy) return status()
       busy = true
       try {
@@ -355,7 +358,7 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
           return status()
         }
         snapshot = { ...snapshot, phase: 'checking', error: null }
-        await checkRegistry()
+        await checkRegistry(stableOnly)
       } catch (error) {
         if (receipt && receipt.phase !== 'failed' && comparePluginVersions(options.currentVersion, receipt.version) < 0) {
           snapshot = { ...snapshot, phase: 'outcome_unknown', error: 'installation_unknown' }
@@ -364,14 +367,15 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
       finally { busy = false }
       return status()
     },
-    async install(expectedVersion) {
+    async install(expectedVersion, permitted = () => true) {
+      const canInstall = () => options.canInstall() && permitted()
       if (busy || snapshot.phase === 'outcome_unknown' || snapshot.phase === 'restart_required') return status()
       if (snapshot.phase !== 'available' || !release) return status()
       if (expectedVersion !== release.version) {
         snapshot = { ...snapshot, error: 'update_changed' }
         return status()
       }
-      if (!options.canInstall()) { snapshot = { ...snapshot, error: 'busy' }; return status() }
+      if (!canInstall()) { snapshot = { ...snapshot, error: 'busy' }; return status() }
       const manager = options.manager()
       if (!manager) { snapshot = { ...snapshot, error: 'host_unavailable' }; return status() }
       const selected = release
@@ -380,7 +384,7 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
       let releaseLock: (() => Promise<void>) | undefined
       try {
         releaseLock = await options.acquireInstallLock()
-        if (!options.canInstall()) throw new UpdateFailure('busy')
+        if (!canInstall()) throw new UpdateFailure('busy')
         snapshot = { ...snapshot, phase: 'downloading', error: null }
         const bytes = await fetchBytes(selected.tarball, MAX_PACKAGE_BYTES, options)
         verifyArchive(bytes, selected)
@@ -397,15 +401,15 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
         if (process.platform !== 'win32') await chmod(artifact, 0o600)
         verifyArchive(await readFile(artifact), selected)
         {
-          if (!options.canInstall()) throw new UpdateFailure('busy')
+          if (!canInstall()) throw new UpdateFailure('busy')
           const bundle = (await manager.listBundles()).find(value => value.name === UPDATE_PACKAGE)
           if (!bundle?.installed || bundle.availability !== 'profile') throw new UpdateFailure('host_unavailable')
-          if (!options.canInstall()) throw new UpdateFailure('busy')
+          if (!canInstall()) throw new UpdateFailure('busy')
           if (bundle.version && comparePluginVersions(selected.version, bundle.version) <= 0) throw new UpdateFailure('host_refused')
           const nextReceipt: Receipt = { version: selected.version, integrity: selected.integrity,
             requestId: randomUUID(), phase: 'installing', restartReason: null }
           await saveReceipt(nextReceipt)
-          if (!options.canInstall()) {
+          if (!canInstall()) {
             await saveReceipt({ ...nextReceipt, phase: 'failed' })
             throw new UpdateFailure('busy')
           }

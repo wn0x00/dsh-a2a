@@ -14,6 +14,7 @@ async function fixture(t, options = {}) {
     })
   const opened = []
   const registrations = []
+  const revocations = []
   let rejectRegistration = false
   let delivered = false
   const bridge = createBridge(
@@ -28,6 +29,7 @@ async function fixture(t, options = {}) {
         clientId: 'desktop',
         authorizationEndpoint: 'https://platform.example/authorize',
         tokenEndpoint: 'https://platform.example/token',
+        revocationEndpoint: options.noRevocation ? undefined : 'https://platform.example/revoke',
         redirectUri: 'http://127.0.0.1:43127/oauth/callback',
         scopes: ['device.connect'],
         tokenStore: store,
@@ -37,6 +39,11 @@ async function fixture(t, options = {}) {
         },
       },
       fetch: async (url, init) => {
+        if (String(url).endsWith('/revoke')) {
+          revocations.push(new URLSearchParams(init.body))
+          await options.revokeGate?.()
+          return new Response(null, { status: options.revokeFails ? 503 : 200 })
+        }
         if (String(url).endsWith('/token')) {
           await options.exchangeGate?.()
           if (options.exchangeFails)
@@ -82,6 +89,7 @@ async function fixture(t, options = {}) {
     store,
     opened,
     registrations,
+    revocations,
     rejectRegistration: () => {
       rejectRegistration = true
     },
@@ -282,6 +290,10 @@ test('reauthorization refuses an active local task without canceling it', async 
   assert.equal(aborted, false)
   await assert.rejects(f.bridge.pauseForUpdate(), (error) => error.code === 'busy')
   assert.equal(aborted, false, 'updating must not cancel an existing task')
+  assert.equal(f.bridge.status().canRevokeAuthorization, false)
+  await assert.rejects(f.bridge.revokeAuthorization(), (error) => error.code === 'busy')
+  assert.equal(f.revocations.length, 0)
+  assert.equal(aborted, false)
   assert.equal(f.opened.length, 0)
   await f.bridge.stop()
   assert.equal(aborted, true)
@@ -316,4 +328,66 @@ test('an idle update pause preserves authorization and resumes without browser c
   await f.bridge.reauthorize()
   await assert.rejects(f.bridge.pauseForUpdate(), (error) => error.code === 'busy')
   assert.equal(f.bridge.status().phase, 'authorizing')
+})
+
+
+test('confirmed revocation removes credentials and allows a fresh consent without opening a browser automatically', async (t) => {
+  const f = await fixture(t)
+  await f.bridge.start()
+  assert.equal(f.bridge.status().authorized, true)
+  assert.equal(f.bridge.status().canRevokeAuthorization, true)
+  await f.bridge.revokeAuthorization()
+  assert.equal(f.revocations.length, 1)
+  assert.equal(f.revocations[0].get('token'), 'old-refresh')
+  assert.equal(f.revocations[0].get('token_type_hint'), 'refresh_token')
+  assert.equal(await f.store.get(), undefined)
+  assert.equal(f.bridge.status().authorized, false)
+  assert.equal(f.bridge.status().notice, 'authorization_revoked')
+  assert.equal(f.bridge.status().phase, 'authorization_required')
+  assert.equal(f.opened.length, 0)
+  await f.bridge.connect()
+  assert.equal(f.bridge.status().phase, 'authorizing')
+})
+
+test('failed revocation preserves credentials for a confirmed retry', async (t) => {
+  const options = { revokeFails: true }
+  const f = await fixture(t, options)
+  await f.bridge.start()
+  await assert.rejects(f.bridge.revokeAuthorization(), /not confirmed/)
+  assert.equal((await f.store.get()).refreshToken, 'old-refresh')
+  assert.equal(f.bridge.status().notice, 'revocation_failed')
+  assert.equal(f.bridge.status().authorized, true)
+  assert.equal(f.bridge.status().canRevokeAuthorization, true)
+  options.revokeFails = false
+  await f.bridge.revokeAuthorization()
+  assert.equal(await f.store.get(), undefined)
+  assert.equal(f.revocations.length, 2)
+})
+
+test('unsupported revocation retains credentials and pending consent cannot be revoked', async (t) => {
+  const f = await fixture(t, { noRevocation: true })
+  await f.bridge.start()
+  assert.equal(f.bridge.status().canRevokeAuthorization, false)
+  await assert.rejects(f.bridge.revokeAuthorization(), /does not support/)
+  assert.ok(await f.store.get())
+  assert.equal(f.revocations.length, 0)
+  await f.bridge.reauthorize()
+  await assert.rejects(f.bridge.revokeAuthorization(), /operation is active/)
+  assert.ok(await f.store.get())
+})
+
+test('revocation fences concurrent consent and updater handoff', async (t) => {
+  let release, started
+  const pending = new Promise(resolve => { release = resolve })
+  const ready = new Promise(resolve => { started = resolve })
+  const f = await fixture(t, { revokeGate: async () => { started(); await pending } })
+  await f.bridge.start()
+  const operation = f.bridge.revokeAuthorization()
+  await ready
+  assert.equal(f.bridge.status().phase, 'revoking')
+  assert.equal(f.bridge.status().canRevokeAuthorization, false)
+  await assert.rejects(f.bridge.reauthorize(), /operation is active/)
+  await assert.rejects(f.bridge.pauseForUpdate(), /operation is active/)
+  release()
+  await operation
 })

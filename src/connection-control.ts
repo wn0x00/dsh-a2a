@@ -17,6 +17,7 @@ export type ConnectionControlAction =
   | 'connect'
   | 'reauthorize'
   | 'cancelPendingAuthorization'
+  | 'revokeAuthorization'
 export type ConnectionControl = {
   status(): ConnectionSnapshot
   act(action: ConnectionControlAction): Promise<void>
@@ -62,6 +63,11 @@ export class ConnectionController extends TypertRemoteService {
   @Remote
   async cancelAuthorization(): Promise<ConnectionSnapshot> {
     return this.perform('cancelPendingAuthorization')
+  }
+
+  @Remote
+  async revokeAuthorization(): Promise<ConnectionSnapshot> {
+    return this.perform('revokeAuthorization')
   }
 
   @Remote

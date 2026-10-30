@@ -147,12 +147,12 @@ async function fixture(t, options = {}) {
 test('published bundle reads its mounted namespace through a real scoped Client and Host RPC', async (t) => {
   const f = await fixture(t)
   assert.deepEqual(await f.connection().status(), { ok: true, value: snapshot })
-  for (const action of ['connect', 'reauthorize', 'cancelAuthorization']) {
+  for (const action of ['connect', 'reauthorize', 'cancelAuthorization', 'revokeAuthorization']) {
     assert.equal((await f.connection()[action]()).ok, true)
   }
-  assert.deepEqual(f.actions, ['connect', 'reauthorize', 'cancelPendingAuthorization'])
+  assert.deepEqual(f.actions, ['connect', 'reauthorize', 'cancelPendingAuthorization', 'revokeAuthorization'])
   assert.deepEqual(f.calls.map(({ endpoint }) => endpoint), [
-    'dshA2a/status', 'dshA2a/connect', 'dshA2a/reauthorize', 'dshA2a/cancelAuthorization',
+    'dshA2a/status', 'dshA2a/connect', 'dshA2a/reauthorize', 'dshA2a/cancelAuthorization', 'dshA2a/revokeAuthorization',
   ])
   assert.ok(f.calls.every(({ payload }) => Object.keys(payload).join() === 'args'
     && Object.keys(payload.args).length === 0))
@@ -167,7 +167,7 @@ test('published bundle reads its mounted namespace through a real scoped Client 
 test('real wire preserves owner-only policy and redacts failed management actions', async (t) => {
   const f = await fixture(t, { actionError: true })
   f.principal({ kind: 'agent', id: 'untrusted' })
-  for (const action of ['status', 'connect', 'reauthorize', 'cancelAuthorization']) {
+  for (const action of ['status', 'connect', 'reauthorize', 'cancelAuthorization', 'revokeAuthorization']) {
     const result = await f.connection()[action]()
     assert.equal(result.ok, false)
     assert.equal(result.error.code, 'remote-access/denied')
@@ -182,7 +182,7 @@ test('real wire preserves owner-only policy and redacts failed management action
 test('controller still denies a non-owner when an upstream access policy allows the call', async (t) => {
   const f = await fixture(t, { allowNonOwner: true })
   f.principal({ kind: 'agent', id: 'untrusted' })
-  for (const action of ['status', 'connect', 'reauthorize', 'cancelAuthorization']) {
+  for (const action of ['status', 'connect', 'reauthorize', 'cancelAuthorization', 'revokeAuthorization']) {
     assert.equal((await f.connection()[action]()).ok, false)
   }
   assert.deepEqual(f.actions, [])
@@ -223,10 +223,10 @@ test('wire reports carrier and withdrawn Host failures without mistaking them fo
   assert.equal(withdrawn.error.code, 'gateway/definition-unavailable')
 })
 
-test('unloading and reloading the real bundle removes and recreates its namespace and both settings slots', async (t) => {
+test('unloading and reloading the real bundle removes and recreates its namespace, settings slots and global reminder', async (t) => {
   const f = await fixture(t)
   const oldConnection = f.connection()
-  assert.equal(f.registrations.size, 2)
+  assert.equal(f.registrations.size, 3)
   assert.equal((await oldConnection.status()).ok, true)
   await f.unload()
   assert.equal(f.registrations.size, 0)
@@ -234,7 +234,7 @@ test('unloading and reloading the real bundle removes and recreates its namespac
   assert.equal(f.client.get('typert').remotes.list().length, 0)
   await assert.rejects(async () => oldConnection.status())
   await f.reload()
-  assert.equal(f.registrations.size, 2)
+  assert.equal(f.registrations.size, 3)
   assert.equal((await f.connection().status()).ok, true)
 })
 

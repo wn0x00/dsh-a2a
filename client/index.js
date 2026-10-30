@@ -1,15 +1,19 @@
 import { connectionContribution } from '../src/connection-contract.ts'
 import { createConnectionPanel } from './connection-panel.js'
 import { createUpdatePanel } from './update-panel.js'
+import { createUpdateReminder } from './update-reminder.js'
+import { createInfoTip } from './ui-help.js'
 
 // DSH supplies React, its configuration store and native project/model catalogs.
 window.__ModuleLoader__.load({
   id: '@guanzhu.me/dsh-a2a',
   factory: (require) => {
     const React = require('react')
-    const { Button, Input } = require('@deepseek-ai/dsh-client-ui-primitives')
-    const ConnectionPanel = createConnectionPanel(React, Button)
-    const UpdatePanel = createUpdatePanel(React, Button)
+    const { Button, Input, Toast, Tooltip, Modal } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const InfoTip = createInfoTip(React, Tooltip)
+    const ConnectionPanel = createConnectionPanel(React, Button, { Tooltip, Modal })
+    const UpdatePanel = createUpdatePanel(React, Button, { Tooltip, Modal })
+    const UpdateReminder = createUpdateReminder(React, Toast)
     const h = React.createElement
     const fields = [
       'gatewayUrl',
@@ -19,6 +23,7 @@ window.__ModuleLoader__.load({
       'agentPreset',
       'provider',
       'model',
+      'automaticUpdates',
     ]
     const muted = { margin: 0, opacity: 0.72, lineHeight: 1.6 }
     const selectStyle = {
@@ -33,7 +38,8 @@ window.__ModuleLoader__.load({
       Object.fromEntries(
         fields.map((field) => [
           field,
-          typeof value?.[field] === 'string' ? value[field] : '',
+          field === 'automaticUpdates' ? value?.[field] === true
+            : typeof value?.[field] === 'string' ? value[field] : '',
         ]),
       )
     const modelKey = (provider, model) =>
@@ -139,14 +145,14 @@ window.__ModuleLoader__.load({
           if (mounted.current)
             setNotice({
               error: true,
-              text: '无法打开文件夹选择器，请填写本机目录的完整路径，或选择已有工作区。',
+              text: '无法打开本地文件夹对话框，请重试或选择已有工作区。',
             })
         } finally {
           if (mounted.current) setBusy(null)
         }
       }
       async function save(event) {
-        event.preventDefault()
+        event?.preventDefault()
         if (!editable || busy || !changed || !draft) return
         setBusy('save')
         setNotice(null)
@@ -163,15 +169,17 @@ window.__ModuleLoader__.load({
           )
           if (!mounted.current) return
           if (accepted) {
-            setDraft(null)
+            setDraft((previous) => previous === draft ? null : previous && ({
+              ...previous, revision: form.getSnapshot().revision,
+            }))
             setNotice({
               error: false,
-              text: '配置已保存。已连接设备的名称和描述会同步到平台；新对话使用所选工作区、Agent 预设和模型。',
+              text: '已自动保存',
             })
           } else {
             setNotice({
               error: true,
-              text: '未能保存。请确认目录和预设可用；配置可能已更新，请取消修改后重试。',
+              text: '未能保存。请确认目录和预设可用；配置可能已更新，请撤销修改后重试。',
             })
           }
         } catch {
@@ -184,6 +192,11 @@ window.__ModuleLoader__.load({
           if (mounted.current) setBusy(null)
         }
       }
+      React.useEffect(() => {
+        if (!editable || busy || !changed || !draft || notice?.error) return
+        const timer = setTimeout(() => { void save() }, 600)
+        return () => clearTimeout(timer)
+      }, [draft, editable, busy, changed, snapshot.revision, notice?.error])
       const disabled = !editable || busy !== null
       return h(
         'form',
@@ -205,21 +218,17 @@ window.__ModuleLoader__.load({
               : busy === 'pick'
                 ? '正在选择工作区，请完成或取消选择后再操作。'
                 : null),
-        }),
-        h(UpdatePanel, {
-          updates,
-          disabled: disabled || changed,
-          readOnly: !editable,
-          changed,
-        }),
+        },
         h(
           'section',
           {
             'aria-label': '平台地址',
             style: { display: 'grid', gap: 8, padding: '8px 0' },
           },
-          h('h4', { style: { margin: '0 0 4px', fontSize: 14 } }, '平台地址'),
-          h('label', { htmlFor: `${id}-gateway` }, '平台地址'),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+            h('label', { htmlFor: `${id}-gateway` }, '平台地址'),
+            h(InfoTip, { label: '平台地址说明', text: '填写平台网址。更换地址后需要重新授权。' }),
+          ),
           h(Input, {
             id: `${id}-gateway`,
             'aria-label': '平台地址',
@@ -231,23 +240,73 @@ window.__ModuleLoader__.load({
             spellCheck: false,
             onChange: (event) => update({ gatewayUrl: event.target.value }),
           }),
-          h(
-            'p',
-            { style: { ...muted, fontSize: 12 } },
-            '平台后端服务的 HTTPS 源站地址，保存后用它完成浏览器授权并连接；本机调试可用 http://127.0.0.1 回环地址。更换地址会切换本机凭据与设备身份，需要在浏览器中重新授权。',
-          ),
-          saved.gatewayUrl
-            ? h(
-                'p',
-                { style: { ...muted, fontSize: 12, overflowWrap: 'anywhere' } },
-                `已保存的平台地址：${saved.gatewayUrl}`,
-              )
-            : h(
-                'p',
-                { style: { ...muted, fontSize: 12, color: '#92702a' } },
-                '尚未配置平台地址，保存后才能连接平台。',
-              ),
+        )
         ),
+        h(
+          'section',
+          {
+            'aria-label': '任务运行',
+            style: {
+              display: 'grid',
+              gap: 8,
+              padding: 16,
+              border: '1px solid var(--dsw-alias-border-l3)',
+              borderRadius: 10,
+            },
+          },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+            h('label', { htmlFor: `${id}-project` }, '工作区（项目目录）'),
+            h(InfoTip, { label: '工作区（项目目录）说明', text: '任务在此目录运行；更换目录后请开启新对话。' }),
+          ),
+          h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 } },
+          h(
+            'select',
+            {
+              id: `${id}-project`,
+              'aria-label': '工作区',
+              title: value.workingDirectory || '使用 Harness 默认目录',
+              value:
+                project?.workspaceId ??
+                (value.workingDirectory ? '__custom__' : ''),
+              disabled: disabled || projects.phase !== 'ready',
+              style: { ...selectStyle, flex: '1 1 0', minWidth: 0, width: 0 },
+              onChange: (event) => {
+                if (!event.target.value) {
+                  update({ workingDirectory: '' })
+                  return
+                }
+                const item = projects.items.find(
+                  (entry) => entry.workspaceId === event.target.value,
+                )
+                if (item) update({ workingDirectory: item.path })
+              },
+            },
+            h('option', { value: '' }, '使用 Harness 默认目录'),
+            value.workingDirectory && !project
+              ? h(
+                  'option',
+                  { value: '__custom__' },
+                  `所选目录 · ${value.workingDirectory}`,
+                )
+              : null,
+            projects.items.map((item) =>
+              h(
+                'option',
+                { key: item.workspaceId, value: item.workspaceId },
+                `${item.title} · ${item.path}`,
+              ),
+            ),
+          ),
+            h(
+              Button,
+              { type: 'button', variant: 'outline', disabled, onClick: choose, style: { flexShrink: 0, whiteSpace: 'nowrap' } },
+              busy === 'pick' ? '正在选择…' : '选择目录',
+            ),
+          ),
+        h(
+          'details',
+          { style: { borderTop: '1px solid var(--dsw-alias-border-l3)', paddingTop: 12 } },
+          h('summary', { style: { cursor: 'pointer', fontSize: 13, padding: '4px 0' } }, '高级设置 · 设备、预设与模型'),
         h(
           'section',
           {
@@ -280,106 +339,7 @@ window.__ModuleLoader__.load({
               update({ deviceDescription: event.target.value }),
           }),
         ),
-        h(
-          'section',
-          {
-            'aria-label': '任务运行',
-            style: {
-              display: 'grid',
-              gap: 8,
-              paddingTop: 16,
-              borderTop: '1px solid var(--dsw-alias-border-l3)',
-            },
-          },
-          h('h4', { style: { margin: '0 0 4px', fontSize: 14 } }, '任务运行'),
-          h(
-            'p',
-            { style: { ...muted, fontSize: 12 } },
-            '平台任务会话保存在 DSH 左侧的工作区中。工作区就是任务实际执行的项目目录，任务结束后会话仍然保留。',
-          ),
-          h('label', { htmlFor: `${id}-project` }, '工作区（项目目录）'),
-          h(
-            'select',
-            {
-              id: `${id}-project`,
-              'aria-label': '工作区',
-              value:
-                project?.workspaceId ??
-                (value.workingDirectory ? '__custom__' : ''),
-              disabled: disabled || projects.phase !== 'ready',
-              style: selectStyle,
-              onChange: (event) => {
-                if (!event.target.value) {
-                  update({ workingDirectory: '' })
-                  return
-                }
-                const item = projects.items.find(
-                  (entry) => entry.workspaceId === event.target.value,
-                )
-                if (item) update({ workingDirectory: item.path })
-              },
-            },
-            h('option', { value: '' }, '使用 Harness 默认目录'),
-            value.workingDirectory && !project
-              ? h(
-                  'option',
-                  { value: '__custom__' },
-                  `所选目录 · ${value.workingDirectory}`,
-                )
-              : null,
-            projects.items.map((item) =>
-              h(
-                'option',
-                { key: item.workspaceId, value: item.workspaceId },
-                `${item.title} · ${item.path}`,
-              ),
-            ),
-          ),
-          h(
-            'div',
-            {
-              style: {
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 8,
-                alignItems: 'center',
-              },
-            },
-            h(
-              'div',
-              { style: { flex: '1 1 300px', minWidth: 0, display: 'grid' } },
-              h(Input, {
-                id: `${id}-directory`,
-                'aria-label': '工作区目录',
-                value: value.workingDirectory,
-                onChange: (event) =>
-                  update({ workingDirectory: event.target.value }),
-                disabled,
-                placeholder:
-                  '选择文件夹或输入完整目录路径；留空使用 Harness 默认目录',
-                autoComplete: 'off',
-                spellCheck: false,
-                style: { width: '100%' },
-              }),
-            ),
-            h(
-              Button,
-              { type: 'button', variant: 'outline', disabled, onClick: choose },
-              busy === 'pick' ? '正在选择…' : '选择文件夹',
-            ),
-          ),
-          h(
-            'p',
-            { style: { ...muted, fontSize: 12, overflowWrap: 'anywhere' } },
-            saved.workingDirectory
-              ? `已保存的工作区目录：${saved.workingDirectory}`
-              : '当前使用 Harness 默认目录，它不跟随左侧临时选中的工作区。',
-          ),
-          h(
-            'p',
-            { style: muted },
-            '选择已有工作区或选择文件夹会设置同一个目录。新目录会在首次任务时加入左侧工作区。更换目录后，请在平台开启新对话。',
-          ),
+          h('div', { style: { display: 'grid', gap: 8, padding: '8px 0' } },
           h('label', { htmlFor: `${id}-preset` }, 'Agent 预设（工具集）'),
           h(
             'select',
@@ -422,9 +382,12 @@ window.__ModuleLoader__.load({
             selectedPreset?.broken
               ? `所选预设不可用：${selectedPreset.broken}`
               : (selectedPreset?.description ??
-                  '在 Harness 的 Agent 预设中配置工具。运行命令需要所选预设包含 Shell 工具。'),
+                  '工具由所选 Agent 预设决定。'),
           ),
-          h('label', { htmlFor: `${id}-model` }, '模型'),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+            h('label', { htmlFor: `${id}-model` }, '模型'),
+            h(InfoTip, { label: '模型说明', text: '仅影响新会话。添加模型请前往 Harness 设置 → 模型。' }),
+          ),
           h(
             'select',
             {
@@ -474,11 +437,6 @@ window.__ModuleLoader__.load({
               )
             : null,
           h(
-            'p',
-            { style: muted },
-            '此处选择新会话的默认模型。已有会话可在 DSH 的模型选择器中调整。添加模型和密钥：Harness 设置 → 模型。',
-          ),
-          h(
             'div',
             {
               style: {
@@ -502,7 +460,7 @@ window.__ModuleLoader__.load({
             h(
               'p',
               { style: muted },
-              '在 Harness 设置 → 常规 → 权限中调整新会话默认值。已有会话保留原权限，需要确认的工具仍由 Harness 审批。插件不会自动放开权限。',
+              '权限跟随 Harness 设置 → 常规 → 权限。',
             ),
           ),
           catalogs.loading
@@ -519,38 +477,27 @@ window.__ModuleLoader__.load({
                 catalogs.errors.join('；'),
               )
             : null,
+          ),
         ),
+        ),
+        h(UpdatePanel, {
+          updates,
+          disabled: disabled || changed,
+          readOnly: !editable,
+          changed,
+          autoEnabled: value.automaticUpdates,
+          autoDisabled: disabled,
+          onAutoChange: (enabled) => update({ automaticUpdates: enabled }),
+        }),
         configurationReason
           ? h('p', { role: 'status', style: muted }, configurationReason)
           : null,
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8 } },
-          h(
-            Button,
-            {
-              type: 'submit',
-              variant: 'primary',
-              disabled: disabled || !changed,
-            },
-            busy === 'save' ? '正在保存…' : '保存任务配置',
-          ),
-          changed
-            ? h(
-                Button,
-                {
-                  type: 'button',
-                  variant: 'ghost',
-                  disabled: busy !== null,
-                  onClick: () => {
-                    setDraft(null)
-                    setNotice(null)
-                  },
-                },
-                '取消修改',
-              )
-            : null,
-        ),
+        notice?.error && changed
+          ? h('div', { style: { display: 'flex', gap: 8 } },
+              h(Button, { type: 'button', disabled, onClick: () => { void save() } }, '重试保存'),
+              h(Button, { type: 'button', variant: 'ghost', disabled,
+                onClick: () => { setDraft(null); setNotice(null) } }, '撤销修改'))
+          : null,
         notice
           ? h(
               'p',
@@ -582,6 +529,7 @@ window.__ModuleLoader__.load({
           connect: () => ctx.remote.dshA2a.connect(),
           reauthorize: () => ctx.remote.dshA2a.reauthorize(),
           cancelAuthorization: () => ctx.remote.dshA2a.cancelAuthorization(),
+          revokeAuthorization: () => ctx.remote.dshA2a.revokeAuthorization(),
           subscribe: (refresh) => ctx.on('connection/reset', refresh),
         },
         updates: {
@@ -641,6 +589,13 @@ window.__ModuleLoader__.load({
         },
       }
       const disposers = [
+        ctx.slots.inject('shell.overlay', () =>
+          ctx.slots.register(
+            { name: 'shell.overlay', id: 'dsh-a2a-update-reminder', order: 80,
+              inject: () => ({ updates: actions.updates }) },
+            UpdateReminder,
+          ),
+        ),
         ctx.slots.inject('plugins.bundle.config', () =>
           ctx.slots.register(
             {

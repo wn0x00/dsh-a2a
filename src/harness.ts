@@ -7,6 +7,7 @@ import { installConnectionControl } from './connection-control.js'
 import { ConnectionActionError, type ConnectionSnapshot } from './connection-state.js'
 import { createPluginUpdater, type NativePluginManager, type PluginUpdater } from './plugin-update.js'
 import { PLUGIN_VERSION } from './release-config.js'
+import { createAutomaticUpdates } from './automatic-updates.js'
 import { startOAuthCallbackServer, type OAuthCallbackServer } from './oauth-callback.js'
 import { createBridge, type A2ABridge } from './plugin.js'
 import { configuredGatewayUrl, createPlatformBridgeConfig, deviceIdentity, updateStorageDirectory } from './platform.js'
@@ -283,6 +284,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     let initialized = false
     let updating = false
     let updater: PluginUpdater | undefined
+    let automatic: ReturnType<typeof createAutomaticUpdates> | undefined
     let pluginManager: NativePluginManager | undefined
     if ('inject' in ctx) (ctx as unknown as Context).inject(['pluginManager'], (scope) => {
       pluginManager = scope.get('pluginManager') as unknown as NativePluginManager
@@ -291,6 +293,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     // This is the host Loader's committed volatile-config event, also used by
     // native DSH settings services. It does not require a private desktop RPC.
     ctx.on?.('loader/volatile-update', () => {
+      automatic?.refresh()
       const nextGateway = configuredGatewayUrl(config)
       const nextRequest = configuredString(config.connectionRequest)
       const nextIdentity = deviceIdentity(config)
@@ -374,6 +377,12 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
         }
       },
     })
+    automatic = createAutomaticUpdates(updater, {
+      storageDirectory: updateStorageDirectory(config, ctx.baseUrl),
+      enabled: () => (typeof config.automaticUpdates === 'boolean'
+        ? config.automaticUpdates : config.automaticUpdates?.get()) === true,
+    })
+    updater = automatic.updater
     const initialize = async () => {
       // No platform origin is built in: without a configured address the
       // plugin idles in configuration_required until Settings supplies one.
@@ -414,7 +423,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
         release = undefined
       }
       if (!disposed) console.error(`[${name}] failed to start`, error instanceof Error ? error.message : 'Unknown error')
-    }).finally(() => { initialized = true })
+    }).finally(() => { initialized = true; if (!disposed) automatic?.start() })
 
     // Standalone bridge consumers have no Cordis registry; the real Host does.
     if ('inject' in ctx) installConnectionControl(ctx as unknown as Context, {
@@ -426,9 +435,10 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
         gatewayUrl: configured, deviceId: '', deviceName: identity.name, activeTasks: 0,
         pendingExpiresAt: null, lastConnectedAt: null, lastContactAt: null,
         canConnect: initialized && !disposed && !controlUpdate && Boolean(configured), canReauthorize: false, canCancelAuthorization: false,
+        authorized: false, canRevokeAuthorization: false,
         }
         return updating
-          ? { ...snapshot, phase: 'updating', canConnect: false, canReauthorize: false, canCancelAuthorization: false }
+          ? { ...snapshot, phase: 'updating', canConnect: false, canReauthorize: false, canCancelAuthorization: false, canRevokeAuthorization: false }
           : snapshot
       },
       act: async (action) => {
@@ -449,6 +459,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
 
     return async () => {
       disposed = true
+      automatic?.stop()
       // Fence the bridge before draining HTTP callbacks. A slow code exchange
       // may finish during shutdown, but must not register or claim new work.
       const stopping = bridge?.stop()

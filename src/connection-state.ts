@@ -3,6 +3,7 @@ export type ConnectionPhase =
   | 'configuration_required'
   | 'disconnected'
   | 'authorizing'
+  | 'revoking'
   | 'connecting'
   | 'connected'
   | 'reconnecting'
@@ -17,6 +18,8 @@ export type ConnectionNotice =
   | 'authorization_timeout'
   | 'authorization_failed'
   | 'registration_failed'
+  | 'authorization_revoked'
+  | 'revocation_failed'
 
 /** The complete public projection. Never add tokens, PKCE state or credentials. */
 export type ConnectionSnapshot = {
@@ -32,6 +35,8 @@ export type ConnectionSnapshot = {
   canConnect: boolean
   canReauthorize: boolean
   canCancelAuthorization: boolean
+  authorized?: boolean
+  canRevokeAuthorization?: boolean
 }
 
 export class ConnectionActionError extends Error {

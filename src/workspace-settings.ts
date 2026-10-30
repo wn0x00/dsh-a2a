@@ -9,6 +9,7 @@ import type { HarnessCordisContext, HarnessPluginConfig } from './types.js'
 // Host-only validation belongs to internal/config, never to a schema callback.
 export const Config = z
   .object({
+    automaticUpdates: z.boolean().default(false).volatile(),
     gatewayUrl: z.string().max(500).default('').volatile(),
     deviceName: z.string().max(200).default('').volatile(),
     deviceDescription: z.string().max(1000).default('').volatile(),

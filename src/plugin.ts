@@ -22,10 +22,11 @@ export class A2ABridge {
   private restoreAfterAuthorization = false
   private authorizationTimer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
+  private authorized = false
 
   status(): ConnectionSnapshot {
     const activeTasks = this.runner.activeTaskIds().length
-    const busy = Boolean(this.connecting) || ['starting', 'authorizing', 'connecting', 'stopped'].includes(this.phase)
+    const busy = Boolean(this.connecting) || ['starting', 'authorizing', 'connecting', 'revoking', 'stopped'].includes(this.phase)
     return {
       phase: this.phase, notice: this.notice,
       gatewayUrl: new URL(this.config.gatewayUrl).origin,
@@ -35,6 +36,8 @@ export class A2ABridge {
       canConnect: !busy && !this.disposed && !this.loopPromise,
       canReauthorize: !busy && !this.disposed && activeTasks === 0,
       canCancelAuthorization: !this.disposed && !this.connecting && !this.completing && this.phase === 'authorizing' && this.oauth.pendingExpiresAt() !== null,
+      authorized: this.authorized,
+      canRevokeAuthorization: this.authorized && !busy && !this.disposed && activeTasks === 0 && Boolean(this.config.oauth.revocationEndpoint),
     }
   }
 
@@ -174,8 +177,11 @@ export class A2ABridge {
     if (this.loopPromise) return
     if (this.disposed) throw new ConnectionActionError('unavailable')
     this.phase = 'connecting'
-    await this.oauth.accessToken()
-    await this.gateway.register(this.allowedSkills)
+    this.authorized = await this.oauth.hasCredentials()
+    try { await this.oauth.accessToken(); this.authorized = true }
+    catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
+    try { await this.gateway.register(this.allowedSkills) }
+    catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
     if (this.disposed) return
     this.phase = 'connected'
     this.lastConnectedAt = this.lastContactAt = Date.now()
@@ -233,6 +239,7 @@ export class A2ABridge {
     } catch (error) {
       if (error instanceof OAuthLoginRequiredError) {
         await this.stopPolling()
+        this.authorized = false
         this.phase = 'authorization_required'
       }
       throw error
@@ -255,6 +262,31 @@ export class A2ABridge {
   async logout(): Promise<void> {
     await this.stop()
     await this.oauth.logout()
+    this.authorized = false
+  }
+
+  async revokeAuthorization(): Promise<void> {
+    if (this.disposed) throw new ConnectionActionError('unavailable')
+    if (this.connecting || this.completing || this.runner.activeTaskIds().length
+      || ['starting', 'connecting', 'authorizing', 'revoking'].includes(this.phase)) throw new ConnectionActionError('busy')
+    this.connecting = (async () => {
+      // Fence task admission before any await; do not cancel an active task.
+      this.phase = 'revoking'
+      this.notice = 'none'
+      await this.stopPolling()
+      try {
+        await this.oauth.revokeAuthorization()
+        this.authorized = false
+        this.notice = 'authorization_revoked'
+        if (!this.disposed) this.phase = 'authorization_required'
+      } catch (error) {
+        this.authorized = await this.oauth.hasCredentials()
+        this.notice = 'revocation_failed'
+        if (!this.disposed) this.phase = this.authorized ? 'error' : 'authorization_required'
+        throw error
+      }
+    })()
+    try { await this.connecting } finally { this.connecting = undefined }
   }
 
   /** Stop accepting work only when idle; preserve credentials for restart. */
@@ -338,7 +370,8 @@ export class A2ABridge {
           await this.runner.stop()
           this.loopPromise = undefined
           this.stopController = undefined
-          this.phase = 'authorization_required'
+          this.authorized = false
+        this.phase = 'authorization_required'
           this.log('info', 'Device authorization expired or was revoked; connect again from Harness Settings → A2A platform tasks')
           return
         }
