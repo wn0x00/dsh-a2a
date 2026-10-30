@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "com.xbot.deepseek-harness-a2a",
-  "name": "Xbot A2A Device Bridge",
+  "id": "me.guanzhu.dsh-a2a",
+  "name": "DSH A2A Device Bridge",
   "description": "Connect the native Harness Agent to the platform A2A endpoint through an outbound relay.",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "entry": "dist/index.js",
   "cli": "dist/cli.js",
   "loader": {

@@ -9,7 +9,7 @@ import { createPluginUpdater, type NativePluginManager, type PluginUpdater } fro
 import { PLUGIN_VERSION } from './release-config.js'
 import { startOAuthCallbackServer, type OAuthCallbackServer } from './oauth-callback.js'
 import { createBridge, type A2ABridge } from './plugin.js'
-import { createPlatformBridgeConfig, deviceIdentity, platformStorageDirectory } from './platform.js'
+import { configuredGatewayUrl, createPlatformBridgeConfig, deviceIdentity, updateStorageDirectory } from './platform.js'
 import { HarnessSessionIndex } from './session-index.js'
 import { installWorkspaceSettings, resolveWorkingDirectory } from './workspace-settings.js'
 import type {
@@ -25,7 +25,7 @@ import type {
   HarnessWorkspace,
 } from './types.js'
 
-export const name = 'xbot-deepseek-harness-a2a'
+export const name = 'dsh-a2a'
 export const inject = ['agents', 'agentDefaultModel', 'workspaceRegistry', 'sessions'] as const
 export { Config } from './workspace-settings.js'
 
@@ -277,6 +277,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     let disposed = false
     let connectionRequest = configuredString(config.connectionRequest)
     let identity = deviceIdentity(config)
+    let gatewayUrl = configuredGatewayUrl(config)
     let settingsUpdate = Promise.resolve()
     let controlUpdate: Promise<void> | undefined
     let initialized = false
@@ -290,19 +291,28 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     // This is the host Loader's committed volatile-config event, also used by
     // native DSH settings services. It does not require a private desktop RPC.
     ctx.on?.('loader/volatile-update', () => {
+      const nextGateway = configuredGatewayUrl(config)
       const nextRequest = configuredString(config.connectionRequest)
       const nextIdentity = deviceIdentity(config)
       const connect = nextRequest !== connectionRequest
       const changed = nextIdentity.name !== identity.name || nextIdentity.description !== identity.description
+      const gatewayChanged = nextGateway !== gatewayUrl
       connectionRequest = nextRequest
       identity = nextIdentity
-      if (!connect && !changed) return
+      gatewayUrl = nextGateway
+      if (!connect && !changed && !gatewayChanged) return
       settingsUpdate = settingsUpdate.then(async () => {
         await start
         if (disposed || updating) return
+        if (gatewayChanged) {
+          // A platform address change selects another credential profile: the
+          // old bridge and its profile lock cannot carry over to the new origin.
+          await teardownBridge()
+          if (disposed || updating) return
+        }
         if (!bridge) await initialize()
         if (!bridge || disposed) return
-        if (changed) await bridge.updateIdentity(nextIdentity)
+        if (changed && !gatewayChanged) await bridge.updateIdentity(nextIdentity)
         if (connect) await bridge.connect()
       }).catch((error: unknown) => {
         if (!disposed) console.error(`[${name}] connection needs attention; retry from Settings`, error instanceof Error ? error.message : 'Unknown error')
@@ -315,9 +325,23 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
       // Do not await an active callback HTTP response from inside that response.
       if (active) callbackClosing = active.close()
     }
+    /** Stop the bridge and release its platform/profile lock and sessions. */
+    const teardownBridge = async () => {
+      const stopping = bridge
+      const context = harness
+      bridge = undefined
+      harness = undefined
+      closeCallback()
+      await callbackClosing
+      if (stopping) await stopping.stop()
+      await context?.dispose?.()
+      const unlock = release
+      release = undefined
+      await unlock?.()
+    }
     updater = createPluginUpdater({
       currentVersion: PLUGIN_VERSION,
-      storageDirectory: platformStorageDirectory(config, ctx.baseUrl),
+      storageDirectory: updateStorageDirectory(config, ctx.baseUrl),
       manager: () => pluginManager,
       canInstall: () => initialized && !disposed && !controlUpdate
         && (!bridge || (bridge.status().activeTasks === 0
@@ -351,6 +375,12 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
       },
     })
     const initialize = async () => {
+      // No platform origin is built in: without a configured address the
+      // plugin idles in configuration_required until Settings supplies one.
+      if (!configuredGatewayUrl(config)) {
+        console.info(`[${name}] platform address is not configured; set it in the plugin settings before connecting`)
+        return
+      }
       const prepared = await createPlatformBridgeConfig(config, openAuthorizationUrl, ctx.baseUrl)
       release = prepared.release
       if (disposed) return
@@ -390,11 +420,12 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     if ('inject' in ctx) installConnectionControl(ctx as unknown as Context, {
       updater: () => updater,
       status: () => {
+        const configured = configuredGatewayUrl(config)
         const snapshot: ConnectionSnapshot = bridge?.status() ?? {
-        phase: disposed ? 'stopped' : initialized ? 'error' : 'starting', notice: 'none',
-        gatewayUrl: '', deviceId: '', deviceName: identity.name, activeTasks: 0,
+        phase: disposed ? 'stopped' : !configured ? 'configuration_required' : initialized ? 'error' : 'starting', notice: 'none',
+        gatewayUrl: configured, deviceId: '', deviceName: identity.name, activeTasks: 0,
         pendingExpiresAt: null, lastConnectedAt: null, lastContactAt: null,
-        canConnect: initialized && !disposed && !controlUpdate, canReauthorize: false, canCancelAuthorization: false,
+        canConnect: initialized && !disposed && !controlUpdate && Boolean(configured), canReauthorize: false, canCancelAuthorization: false,
         }
         return updating
           ? { ...snapshot, phase: 'updating', canConnect: false, canReauthorize: false, canCancelAuthorization: false }

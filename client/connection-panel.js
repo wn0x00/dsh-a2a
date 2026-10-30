@@ -1,5 +1,9 @@
 const phases = {
   starting: ['正在启动', '正在读取本机连接信息。'],
+  configuration_required: [
+    '需要配置平台地址',
+    '请先在下方填写平台地址并保存，然后再连接平台。平台地址保存在本机 Harness 配置中。',
+  ],
   disconnected: ['未连接', '连接平台后，可从平台向此设备发送任务。'],
   authorizing: [
     '等待浏览器授权',
@@ -336,6 +340,7 @@ export function createConnectionPanel(React, Button) {
           snapshot &&
           !connected &&
           snapshot.phase !== 'reconnecting' &&
+          snapshot.phase !== 'configuration_required' &&
           snapshot.phase !== 'updating'
           ? h(
               Button,
@@ -352,6 +357,7 @@ export function createConnectionPanel(React, Button) {
           snapshot &&
           snapshot.phase !== 'authorization_required' &&
           snapshot.phase !== 'disconnected' &&
+          snapshot.phase !== 'configuration_required' &&
           snapshot.phase !== 'updating'
           ? h(
               Button,

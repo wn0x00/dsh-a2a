@@ -9,18 +9,17 @@ const Panel = createUpdatePanel(React, (props) =>
 )
 const initial = {
   phase: 'idle',
-  currentVersion: '0.1.10',
+  currentVersion: '0.2.0',
   latestVersion: null,
   checkedAt: null,
   error: null,
   restartReason: null,
   canInstall: false,
-  hasCredential: false,
 }
 const available = {
   ...initial,
   phase: 'available',
-  latestVersion: '0.1.11',
+  latestVersion: '0.2.1',
   checkedAt: 1000,
   canInstall: true,
 }
@@ -67,8 +66,6 @@ async function fixture(t, options = {}) {
     status: [],
     check: [],
     install: [],
-    saveCredential: [],
-    clearCredential: [],
   }
   const updates = {
     status: async (request) => {
@@ -87,18 +84,6 @@ async function fixture(t, options = {}) {
       calls.install.push(version)
       if (options.install) return options.install(version)
       snapshot = completed
-      return { ok: true, value: snapshot }
-    },
-    saveCredential: async (token) => {
-      calls.saveCredential.push(token)
-      if (options.saveCredential) return options.saveCredential(token)
-      snapshot = { ...snapshot, hasCredential: true }
-      return { ok: true, value: snapshot }
-    },
-    clearCredential: async () => {
-      calls.clearCredential.push(true)
-      if (options.clearCredential) return options.clearCredential()
-      snapshot = { ...initial, error: 'credential_required' }
       return { ok: true, value: snapshot }
     },
     subscribe: (refresh) => {
@@ -125,12 +110,6 @@ async function fixture(t, options = {}) {
       view.root
         .findAllByType('button')
         .find((button) => button.children.join('') === label),
-    input: () => view.root.findByType('input'),
-    typeCredential: async (value) => {
-      await act(async () => {
-        view.root.findByType('input').props.onChange({ target: { value } })
-      })
-    },
     publish: async (next) => {
       snapshot = next
       await act(async () => {
@@ -168,20 +147,20 @@ test('manual checking and explicit version confirmation precede one exact-versio
   await page.click('检查更新')
   assert.equal(page.calls.check.length, 1)
   assert.deepEqual(page.calls.install, [])
-  await page.click('更新到 0.1.11')
-  assert.match(page.text(), /确认更新到 0.1.11/)
+  await page.click('更新到 0.2.1')
+  assert.match(page.text(), /确认更新到 0.2.1/)
   await page.click('取消')
   assert.deepEqual(page.calls.install, [])
-  await page.click('更新到 0.1.11')
-  const confirm = page.button('确认安装 0.1.11').props.onClick
+  await page.click('更新到 0.2.1')
+  const confirm = page.button('确认安装 0.2.1').props.onClick
   await act(async () => {
     await Promise.all([confirm(), confirm()])
   })
-  assert.deepEqual(page.calls.install, ['0.1.11'])
+  assert.deepEqual(page.calls.install, ['0.2.1'])
   assert.match(page.text(), /更新已安装，等待重启/)
   assert.match(page.text(), /完全退出 DeepSeek Harness/)
   assert.match(page.text(), /更新包含宿主模块/)
-  assert.equal(page.button('更新到 0.1.11'), undefined)
+  assert.equal(page.button('更新到 0.2.1'), undefined)
 })
 
 for (const props of [
@@ -192,10 +171,10 @@ for (const props of [
 ]) {
   test(`installation is blocked by ${JSON.stringify(props)}`, async (t) => {
     const page = await fixture(t, { snapshot: available, props })
-    assert.equal(page.button('更新到 0.1.11').props.disabled, true)
-    await page.click('更新到 0.1.11')
-    assert.equal(page.button('确认安装 0.1.11').props.disabled, true)
-    await page.click('确认安装 0.1.11')
+    assert.equal(page.button('更新到 0.2.1').props.disabled, true)
+    await page.click('更新到 0.2.1')
+    assert.equal(page.button('确认安装 0.2.1').props.disabled, true)
+    await page.click('确认安装 0.2.1')
     assert.deepEqual(page.calls.install, [])
   })
 }
@@ -204,22 +183,22 @@ test('host task and authorization checks prevent installation even without a loc
   const page = await fixture(t, {
     snapshot: { ...available, canInstall: false },
   })
-  assert.equal(page.button('更新到 0.1.11').props.disabled, true)
+  assert.equal(page.button('更新到 0.2.1').props.disabled, true)
   assert.match(page.text(), /等待任务或授权结束/)
   assert.deepEqual(page.calls.install, [])
 })
 
 test('a version change closes confirmation and a stale click cannot install another target', async (t) => {
   const page = await fixture(t, { snapshot: available })
-  await page.click('更新到 0.1.11')
-  const stale = page.button('确认安装 0.1.11').props.onClick
-  await page.publish({ ...available, latestVersion: '0.1.12' })
-  assert.equal(page.button('确认安装 0.1.11'), undefined)
+  await page.click('更新到 0.2.1')
+  const stale = page.button('确认安装 0.2.1').props.onClick
+  await page.publish({ ...available, latestVersion: '0.2.2' })
+  assert.equal(page.button('确认安装 0.2.1'), undefined)
   await act(async () => {
     await stale()
   })
   assert.deepEqual(page.calls.install, [])
-  assert.equal(page.button('更新到 0.1.12').props.disabled, false)
+  assert.equal(page.button('更新到 0.2.2').props.disabled, false)
 })
 
 test('download and installation progress are read from the host while the accepted request remains pending', async (t) => {
@@ -228,24 +207,24 @@ test('download and installation progress are read from the host while the accept
     snapshot: available,
     install: () => pending.promise,
   })
-  await page.click('更新到 0.1.11')
+  await page.click('更新到 0.2.1')
   let installation
   await act(async () => {
-    installation = page.button('确认安装 0.1.11').props.onClick()
+    installation = page.button('确认安装 0.2.1').props.onClick()
   })
   assert.match(page.text(), /正在提交更新请求/)
   await page.publish({ ...available, phase: 'downloading', canInstall: false })
   assert.match(page.text(), /正在下载更新/)
   await page.publish({ ...available, phase: 'installing', canInstall: false })
   assert.match(page.text(), /正在安装更新/)
-  assert.equal(page.button('更新到 0.1.11'), undefined)
+  assert.equal(page.button('更新到 0.2.1'), undefined)
   await page.publish(completed)
   await act(async () => {
     pending.resolve({ ok: true, value: completed })
     await installation
   })
   assert.match(page.text(), /更新已安装，等待重启/)
-  assert.deepEqual(page.calls.install, ['0.1.11'])
+  assert.deepEqual(page.calls.install, ['0.2.1'])
 })
 
 test('lost installation replies remain unknown until a receipt is confirmed, never automatically reinstalling', async (t) => {
@@ -261,19 +240,19 @@ test('lost installation replies remain unknown until a receipt is confirmed, nev
       return { ok: true, value: receipt }
     },
   })
-  await page.click('更新到 0.1.11')
-  await page.click('确认安装 0.1.11')
+  await page.click('更新到 0.2.1')
+  await page.click('确认安装 0.2.1')
   assert.match(page.text(), /更新结果待核对/)
   assert.doesNotMatch(page.text(), /更新未完成|private-install-secret|Bearer/)
-  assert.equal(page.button('更新到 0.1.11'), undefined)
+  assert.equal(page.button('更新到 0.2.1'), undefined)
   await page.click('刷新更新状态')
   assert.match(page.text(), /更新结果待核对/)
   assert.equal(page.calls.check.length, 0)
-  assert.deepEqual(page.calls.install, ['0.1.11'])
+  assert.deepEqual(page.calls.install, ['0.2.1'])
   await page.click('核对更新结果')
   assert.equal(page.calls.check.length, 1)
   assert.match(page.text(), /更新已安装，等待重启/)
-  assert.deepEqual(page.calls.install, ['0.1.11'])
+  assert.deepEqual(page.calls.install, ['0.2.1'])
 })
 
 test('an unavailable namespace during installation is unknown and recovers through status alone', async (t) => {
@@ -292,8 +271,8 @@ test('an unavailable namespace during installation is unknown and recovers throu
       return { ok: false, error: { message: 'Bearer private' } }
     },
   })
-  await page.click('更新到 0.1.11')
-  await page.click('确认安装 0.1.11')
+  await page.click('更新到 0.2.1')
+  await page.click('确认安装 0.2.1')
   assert.match(page.text(), /更新结果待核对/)
   assert.doesNotMatch(page.text(), /Bearer|private|更新未完成/)
   page.updates.status = async () => ({
@@ -303,7 +282,7 @@ test('an unavailable namespace during installation is unknown and recovers throu
   await page.click('刷新更新状态')
   assert.match(page.text(), /插件已更新/)
   assert.doesNotMatch(page.text(), /更新结果待核对/)
-  assert.deepEqual(page.calls.install, ['0.1.11'])
+  assert.deepEqual(page.calls.install, ['0.2.1'])
 })
 
 test('only approved error and restart reason codes are displayed', async (t) => {
@@ -353,7 +332,7 @@ test('an unreadable update status hides installation and a timed-out read can be
   await clock.fire(8000)
   assert.equal(signal.aborted, true)
   assert.match(page.text(), /无法读取更新状态/)
-  assert.equal(page.button('更新到 0.1.11'), undefined)
+  assert.equal(page.button('更新到 0.2.1'), undefined)
   await page.click('刷新更新状态')
   await act(async () => {
     pending.resolve({
@@ -361,8 +340,8 @@ test('an unreadable update status hides installation and a timed-out read can be
       value: { ...initial, currentVersion: '0.0.1' },
     })
   })
-  assert.match(page.text(), /本次运行版本 0.1.10/)
-  assert.equal(page.button('更新到 0.1.11').props.disabled, false)
+  assert.match(page.text(), /本次运行版本 0.2.0/)
+  assert.equal(page.button('更新到 0.2.1').props.disabled, false)
   assert.deepEqual(page.calls.install, [])
   assert.deepEqual(page.calls.check, [])
 })
@@ -373,10 +352,10 @@ test('unmount does not cancel an accepted installation or apply its late result 
     snapshot: available,
     install: () => pending.promise,
   })
-  await page.click('更新到 0.1.11')
+  await page.click('更新到 0.2.1')
   let installation
   await act(async () => {
-    installation = page.button('确认安装 0.1.11').props.onClick()
+    installation = page.button('确认安装 0.2.1').props.onClick()
   })
   await act(async () => {
     page.view.unmount()
@@ -385,111 +364,13 @@ test('unmount does not cancel an accepted installation or apply its late result 
     pending.resolve({ ok: true, value: completed })
     await installation
   })
-  assert.deepEqual(page.calls.install, ['0.1.11'])
+  assert.deepEqual(page.calls.install, ['0.2.1'])
 })
 
-test('Gitea credentials are write-only, cleared when submitted, and never checked or installed implicitly', async (t) => {
-  const pending = deferred()
-  let latest = initial
-  const page = await fixture(t, {
-    status: async () => ({ ok: true, value: latest }),
-    saveCredential: () => pending.promise,
-  })
-  assert.equal(page.input().props.type, 'password')
-  assert.equal(page.input().props.value, '')
-  assert.match(page.text(), /read:package/)
-  assert.match(page.text(), /xbot 组织成员/)
-  assert.match(page.text(), /user\/settings\/applications/)
-  assert.match(page.text(), /xbot\/-\/packages\?q=deepseek-harness-a2a/)
-  await page.typeCredential('fixture-read-only-token')
-  let save
-  await act(async () => {
-    save = page.button('保存凭据').props.onClick()
-  })
-  assert.deepEqual(page.calls.saveCredential, ['fixture-read-only-token'])
-  assert.equal(page.input().props.value, '')
-  assert.equal(page.input().props.disabled, true)
-  assert.doesNotMatch(page.text(), /fixture-read-only-token/)
-  latest = { ...initial, hasCredential: true }
-  await act(async () => {
-    pending.resolve({ ok: true, value: latest })
-    await save
-  })
-  assert.match(page.text(), /已配置凭据/)
-  assert.equal(page.input().props.value, '')
-  assert.deepEqual(page.calls.check, [])
-  assert.deepEqual(page.calls.install, [])
-  assert.equal(page.button('移除凭据').props.disabled, false)
-})
-
-test('failed credential requests clear the input without exposing errors or replacing an existing credential', async (t) => {
-  const page = await fixture(t, {
-    snapshot: { ...initial, hasCredential: true },
-    saveCredential: async () => {
-      throw new Error('Bearer fixture-read-only-token from server')
-    },
-  })
-  await page.typeCredential('fixture-read-only-token')
-  await page.click('保存凭据')
-  assert.equal(page.input().props.value, '')
-  assert.match(page.text(), /未能确认凭据变更/)
-  assert.match(page.text(), /已配置凭据/)
-  assert.doesNotMatch(page.text(), /Bearer|fixture-read-only-token|from server/)
-  assert.equal(page.calls.saveCredential.length, 1)
-})
-
-test('credential removal is explicit and the UI only receives whether a credential remains', async (t) => {
-  const page = await fixture(t, {
-    snapshot: { ...initial, hasCredential: true },
-  })
-  assert.deepEqual(page.calls.clearCredential, [])
-  await page.click('移除凭据')
-  assert.deepEqual(page.calls.clearCredential, [true])
-  assert.match(page.text(), /未配置凭据/)
-  assert.match(page.text(), /请先配置 Gitea 只读凭据/)
-  assert.equal(page.button('移除凭据'), undefined)
-  assert.equal(page.input().props.value, '')
-  assert.deepEqual(page.calls.install, [])
-})
-
-for (const options of [
-  { props: { readOnly: true } },
-  { props: { disabled: true } },
-  { phase: 'checking' },
-  { phase: 'downloading' },
-  { phase: 'installing' },
-]) {
-  test(`credential changes are blocked during ${JSON.stringify(options)}`, async (t) => {
-    const page = await fixture(t, {
-      snapshot: {
-        ...initial,
-        hasCredential: true,
-        ...(options.phase ? { phase: options.phase } : {}),
-      },
-      props: options.props,
-    })
-    await page.typeCredential('fixture-read-only-token')
-    assert.equal(page.input().props.disabled, true)
-    assert.equal(page.button('保存凭据').props.disabled, true)
-    assert.equal(page.button('移除凭据').props.disabled, true)
-    await page.click('保存凭据')
-    await page.click('移除凭据')
-    assert.deepEqual(page.calls.saveCredential, [])
-    assert.deepEqual(page.calls.clearCredential, [])
-  })
-}
-
-test('credential validation errors use safe instructions and retain existing authorization', async (t) => {
-  const page = await fixture(t, {
-    snapshot: {
-      ...initial,
-      phase: 'error',
-      error: 'credential_invalid',
-      hasCredential: true,
-    },
-  })
-  assert.match(page.text(), /Gitea 未接受此凭据/)
-  assert.match(page.text(), /read:package/)
-  assert.match(page.text(), /已配置凭据/)
-  assert.equal(page.input().props.value, '')
+test('the public npm update source needs no credential and renders no secret input', async (t) => {
+  const page = await fixture(t)
+  assert.match(page.text(), /npm 官方仓库/)
+  assert.equal(page.view.root.findAllByType('input').length, 0)
+  assert.equal(page.button('保存凭据'), undefined)
+  assert.doesNotMatch(page.text(), /Gitea|保存凭据|移除凭据/)
 })

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
-import { normalizeGatewayOrigin, writeReleaseDefaults } from '../scripts/build-defaults.mjs'
+import { writeReleaseDefaults } from '../scripts/build-defaults.mjs'
 import { releaseDirectory, stageRelease } from '../scripts/stage-release.mjs'
 
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
@@ -13,7 +13,7 @@ const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.me
 
 test('release metadata exposes an executable local host runner', () => {
   assert.equal(packageJson.version, manifest.version)
-  assert.equal(packageJson.bin['xbot-deepseek-harness-a2a'], './dist/cli.js')
+  assert.equal(packageJson.bin['dsh-a2a'], './dist/cli.js')
   assert.deepEqual(packageJson.files, ['dist', 'manifest.json', 'README.md', 'cordis.patch.yml'])
   assert.equal(manifest.cli, 'dist/cli.js')
   assert.equal(manifest.entry, 'dist/index.js')
@@ -25,8 +25,12 @@ test('release metadata exposes an executable local host runner', () => {
   assert.ok(manifest.scopes.includes('device.connect'))
   assert.ok(manifest.scopes.includes('device.task.receive'))
   assert.ok(manifest.scopes.includes('device.task.report'))
-  assert.equal(packageJson.private, true)
-  assert.equal(packageJson.repository.url, 'git+https://gitea.guanzhu.me/xbot/deepseek-harness-a2a.git')
+  // Public npm distribution through OIDC trusted publishing; never private,
+  // never bound to a built-in platform origin.
+  assert.equal(packageJson.private, undefined)
+  assert.equal(packageJson.publishConfig.access, 'public')
+  assert.equal(packageJson.publishConfig.provenance, true)
+  assert.equal(packageJson.repository.url, 'git+https://github.com/wn0x00/dsh-a2a.git')
 })
 
 async function releaseFixture(t) {
@@ -64,7 +68,7 @@ test('standalone release stays within its package and hashes the actual archive'
 
 test('release directory override supports platform-relative and absolute destinations', async (t) => {
   const { directory } = await releaseFixture(t)
-  const override = '../platform/frontend/public/downloads/deepseek-harness-a2a'
+  const override = '../platform/frontend/public/downloads/dsh-a2a'
   assert.equal(releaseDirectory(directory, override), resolve(directory, override))
   const outputDir = join(directory, 'platform-downloads')
   assert.equal(releaseDirectory(directory, outputDir), outputDir)
@@ -93,23 +97,13 @@ test('failed packaging preserves the previous release', async (t) => {
   assert.equal(await readFile(join(outputDir, 'release-manifest.json'), 'utf8'), 'previous manifest')
 })
 
-test('release builds embed a validated production origin without changing local defaults', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'xbot-release-defaults-'))
+test('release builds embed only the package version; no platform origin is baked in', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-a2a-release-defaults-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  const productionFile = join(directory, 'production.mjs')
-  await writeReleaseDefaults(productionFile, 'https://agent.guanzhu.me/')
-  assert.equal((await import(pathToFileURL(productionFile).href)).DEFAULT_GATEWAY, 'https://agent.guanzhu.me')
-  assert.equal((await import(pathToFileURL(productionFile).href)).PLUGIN_VERSION, packageJson.version)
-  const localFile = join(directory, 'local.mjs')
-  await writeReleaseDefaults(localFile)
-  assert.equal((await import(pathToFileURL(localFile).href)).DEFAULT_GATEWAY, 'http://127.0.0.1:8000')
+  const productionFile = join(directory, 'release-config.js')
+  await writeReleaseDefaults(productionFile)
+  const generated = await import(pathToFileURL(productionFile).href)
+  assert.equal(generated.PLUGIN_VERSION, packageJson.version)
+  assert.equal('DEFAULT_GATEWAY' in generated, false)
   assert.match(packageJson.scripts.build, /node scripts\/build-defaults\.mjs/u)
-})
-
-test('release gateway rejects plaintext remote hosts and embedded credentials or paths', () => {
-  for (const url of ['http://agent.guanzhu.me', 'https://user:password@agent.guanzhu.me',
-    'https://agent.guanzhu.me/api', 'https://agent.guanzhu.me?token=private',
-    'https://agent.guanzhu.me#fragment', ' https://agent.guanzhu.me', 'file:///tmp/platform']) {
-    assert.throws(() => normalizeGatewayOrigin(url))
-  }
 })

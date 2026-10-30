@@ -8,5 +8,5 @@ export {
 } from './task-runner.js'
 export { MemoryTokenStore, OAuthClient, OAuthLoginRequiredError } from './pkce.js'
 export type * from './types.js'
-export { PersistentTokenStore } from './token-store.js'
-export { createPlatformBridgeConfig } from './platform.js'
+export { PersistentTokenStore, persistedPlatformUrl, persistPlatformUrl, stateStorageBase, stateStorageDirectory } from './token-store.js'
+export { configuredGatewayUrl, createPlatformBridgeConfig, normalizePlatformOrigin, PlatformNotConfiguredError } from './platform.js'

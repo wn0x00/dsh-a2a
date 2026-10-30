@@ -1,12 +1,20 @@
 import { hostname } from 'node:os'
 
-import { lockProfile, persistentDeviceId, PersistentTokenStore, profileStorageDirectory } from './token-store.js'
+import { lockProfile, persistentDeviceId, PersistentTokenStore, profileStorageDirectory, stateStorageDirectory } from './token-store.js'
 import type { BridgeConfig, HarnessPluginConfig } from './types.js'
 import { A2A_MESSAGE_CAPABILITY } from './types.js'
-import { DEFAULT_GATEWAY } from './release-config.js'
 
 export const DEFAULT_REDIRECT = 'http://127.0.0.1:43127/oauth/callback'
 const DEVICE_SCOPES = ['device.connect', 'device.task.receive', 'device.task.report']
+
+/** No platform address is built in. The user configures one in the plugin
+ * settings (persisted by the host), through A2A_GATEWAY_URL, or the CLI. */
+export class PlatformNotConfiguredError extends Error {
+  readonly code = 'platform/not-configured'
+  constructor() {
+    super('Platform address is not configured. Set the platform URL in the plugin settings or A2A_GATEWAY_URL.')
+  }
+}
 
 function env(name: string, fallback: string): string {
   return process.env[name]?.trim() || fallback
@@ -14,6 +22,24 @@ function env(name: string, fallback: string): string {
 
 export function configuredString(value: HarnessPluginConfig['deviceName']): string {
   return typeof value === 'string' ? value : (value?.get() ?? '')
+}
+
+/** The configured platform address before validation; '' when absent. */
+export function configuredGatewayUrl(config: HarnessPluginConfig): string {
+  return configuredString(config.gatewayUrl).trim() || process.env.A2A_GATEWAY_URL?.trim() || ''
+}
+
+/** A platform address is an HTTPS origin, or loopback HTTP for local development. */
+export function normalizePlatformOrigin(value: string): string {
+  const url = new URL(value)
+  if (
+    url.username || url.password || url.search || url.hash || url.pathname !== '/'
+    || /\s/u.test(value)
+    || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
+  ) {
+    throw new Error('Platform URL must be an HTTPS origin or local loopback HTTP origin')
+  }
+  return url.origin
 }
 
 export function deviceIdentity(config: HarnessPluginConfig): { name: string; description: string } {
@@ -39,12 +65,23 @@ function safeEndpoint(value: unknown, label: string): string {
   return url.toString()
 }
 
-/** Resolve storage without contacting the platform, including for self-update. */
-export function platformStorageDirectory(config: HarnessPluginConfig, profileBaseUrl?: string): string {
-  const gatewayUrl = safeEndpoint(config.gatewayUrl ?? env('A2A_GATEWAY_URL', DEFAULT_GATEWAY), 'platform URL')
+function profileScope(config: HarnessPluginConfig, profileBaseUrl?: string): string {
   const external = (config.authMode ?? env('A2A_AUTH_MODE', 'platform')) === 'external'
   const profile = config.profile ?? process.env.A2A_PROFILE?.trim() ?? profileBaseUrl ?? profileName()
-  return profileStorageDirectory(gatewayUrl, `${external ? 'external' : 'platform'}:${profile}`, config.storageDirectory)
+  return `${external ? 'external' : 'platform'}:${profile}`
+}
+
+/** Resolve storage without contacting the platform, including for self-update. */
+export function platformStorageDirectory(config: HarnessPluginConfig, profileBaseUrl?: string): string {
+  const configured = configuredGatewayUrl(config)
+  if (!configured) throw new PlatformNotConfiguredError()
+  return profileStorageDirectory(normalizePlatformOrigin(configured), profileScope(config, profileBaseUrl), config.storageDirectory)
+}
+
+/** Update checks target the public npm registry, not the configured platform,
+ * so their storage is isolated by local profile only. */
+export function updateStorageDirectory(config: HarnessPluginConfig, profileBaseUrl?: string): string {
+  return stateStorageDirectory('plugin-updates', profileScope(config, profileBaseUrl), config.storageDirectory)
 }
 
 /** Shared by the native Cordis adapter and the explicit diagnostic runner. */
@@ -54,9 +91,11 @@ export async function createPlatformBridgeConfig(
   profileBaseUrl?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ config: BridgeConfig; directory: string; release: () => Promise<void> }> {
-  const gatewayUrl = safeEndpoint(config.gatewayUrl ?? env('A2A_GATEWAY_URL', DEFAULT_GATEWAY), 'platform URL')
+  const configured = configuredGatewayUrl(config)
+  if (!configured) throw new PlatformNotConfiguredError()
+  const gatewayUrl = normalizePlatformOrigin(configured)
   const external = (config.authMode ?? env('A2A_AUTH_MODE', 'platform')) === 'external'
-  const directory = platformStorageDirectory(config, profileBaseUrl)
+  const directory = profileStorageDirectory(gatewayUrl, profileScope(config, profileBaseUrl), config.storageDirectory)
   const release = await lockProfile(directory)
   try {
     const identity = await persistentDeviceId(directory)

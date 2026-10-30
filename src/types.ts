@@ -227,15 +227,16 @@ export type HarnessSessionEvent = {
 
 export type HarnessConfigString = string | { get: () => string }
 
-/** Configuration accepted by the actual Cordis plugin entry. All values have
- * environment-backed defaults so the downloaded bundle can be started locally
- * before a profile adds a dedicated config row. */
+/** Configuration accepted by the actual Cordis plugin entry. There is no
+ * built-in platform address: the user configures `gatewayUrl` in Settings
+ * (persisted by the host) or through the environment. */
 export type HarnessPluginConfig = {
   /** The volatile value is supplied by native Harness Settings. */
   workingDirectory?: HarnessConfigString
   /** Local Harness tool/prompt composition; empty follows the host default. */
   agentPreset?: HarnessConfigString
-  gatewayUrl?: string
+  /** Platform base origin; required, configured and persisted by the user. */
+  gatewayUrl?: HarnessConfigString
   /** External issuers are opt-in; legacy issuer environment values are ignored. */
   authMode?: 'platform' | 'external'
   profile?: string

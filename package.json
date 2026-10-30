@@ -1,7 +1,6 @@
 {
-  "name": "@xbot/deepseek-harness-a2a",
-  "version": "0.1.11",
-  "private": true,
+  "name": "@guanzhu.me/dsh-a2a",
+  "version": "0.2.0",
   "description": "A2A device bridge plugin for DeepSeek Harness on Windows",
   "type": "module",
   "main": "./dist/index.js",
@@ -53,7 +52,11 @@
   ],
   "types": "./dist/index.d.ts",
   "bin": {
-    "xbot-deepseek-harness-a2a": "./dist/cli.js"
+    "dsh-a2a": "./dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "dsh": {
     "bundle": {
@@ -73,9 +76,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://gitea.guanzhu.me/xbot/deepseek-harness-a2a.git"
+    "url": "git+https://github.com/wn0x00/dsh-a2a.git"
   },
-  "homepage": "https://gitea.guanzhu.me/xbot/deepseek-harness-a2a",
+  "homepage": "https://github.com/wn0x00/dsh-a2a",
   "dependencies": {
     "zod": "4.4.3"
   }

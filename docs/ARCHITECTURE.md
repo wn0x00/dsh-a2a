@@ -1,11 +1,11 @@
 # Architecture
 
-The canonical implementation is the private
-[`xbot/deepseek-harness-a2a`](https://gitea.guanzhu.me/xbot/deepseek-harness-a2a)
-repository. The platform vendors a reviewed source snapshot and produces its
-download artifacts from that snapshot. The plugin has its own version and test
+The canonical implementation is the
+[`wn0x00/dsh-a2a`](https://github.com/wn0x00/dsh-a2a) repository on GitHub;
+releases publish to npm as `@guanzhu.me/dsh-a2a` through OIDC trusted
+publishing. The plugin has its own version and test
 suite; platform API, authorization policy and deployment remain in the platform
-repository. See [release and synchronization](RELEASE.md).
+repository. See [release](RELEASE.md).
 
 ## Host and client
 
@@ -59,18 +59,21 @@ or perform native Agent execution.
 
 ## Plugin updates
 
-`src/plugin-update.ts` reads the fixed private Gitea Generic package source. It
-uses a separately protected read-only package credential and issues only GET
-requests to the configured Gitea origin; redirects and arbitrary download URLs
-are rejected. Registry names, versions and manifest fields are validated before
-selecting the highest published version. Installation binds the confirmation to
-that exact version and verifies size, SHA-256 and the archive's package identity.
+`src/plugin-update.ts` reads the public npm registry document for
+`@guanzhu.me/dsh-a2a` using the abbreviated metadata format. It issues only GET
+requests to the registry origin; redirects and tarball URLs on any other origin
+or outside the package's own `/-/` path are rejected. No credential is required
+or stored. Versions are validated as strict SemVer before selecting the highest
+published release. Installation binds the confirmation to that exact version
+and verifies the tarball's npm `dist.integrity` (SHA-512) and the archive's
+package identity.
 
-The owner-only `xbotA2a` update methods return a strict public snapshot, never
-credentials or raw upstream errors. The write-only credential methods clear or
-replace only the updater's credential. Updates remain usable when the platform's
-authorization metadata endpoint is unavailable. The UI has separate controls for
-checking a release and explicitly installing it.
+The owner-only `dshA2a` update methods return a strict public snapshot, never
+credentials or raw upstream errors. Updates remain usable when the platform's
+authorization metadata endpoint is unavailable, and their local storage is
+isolated by Harness profile only — it does not depend on the configured
+platform address. The UI has separate controls for checking a release and
+explicitly installing it.
 
 The adapter acquires an idle-task lock, pauses incoming work and fences connection
 actions while installation proceeds. The public Harness `pluginManager.installBundle`
@@ -83,7 +86,15 @@ archives remain available for the host package manager's file dependencies.
 ## Authorization and transport
 
 `src/platform.ts` builds platform-mode configuration and separates profiles by
-platform and local Harness profile. `src/pkce.ts` handles S256 PKCE, exchange and
+platform and local Harness profile. No platform (OAuth authorization) address
+is built in: the user configures one in Settings, where the host persists it as
+a volatile config field; saving validates and normalizes it to an
+HTTPS (or local loopback HTTP) origin. Without a configured address the plugin
+idles in the public `configuration_required` phase instead of failing; a saved
+change tears down the bridge, releases the old profile lock and reconnects
+against the new origin. The standalone diagnostic accepts `--gateway` or
+`A2A_GATEWAY_URL` and persists an explicit address under the local state root.
+`src/pkce.ts` handles S256 PKCE, exchange and
 refresh; `src/oauth-callback.ts` owns the temporary loopback listener and browser
 completion response. `src/token-store.ts` persists credentials using Windows
 DPAPI or a user-only file and serializes access with the profile lock. Neither
@@ -117,9 +128,8 @@ platform conversation. Existing sessions retain their native model selection.
 ## Build boundary
 
 TypeScript emits host code and declarations into `dist/`; esbuild emits the
-ModuleLoader client; `scripts/build-defaults.mjs` writes only the selected gateway
-origin. The local default is loopback. A platform release sets
-`XBOT_DEFAULT_GATEWAY_URL` to its HTTPS origin. No credential is a build input.
+ModuleLoader client; `scripts/build-defaults.mjs` writes only the package
+version. No credential and no platform origin is a build input.
 
 `scripts/stage-release.mjs` runs the package build through `npm pack`, calculates
 the actual archive size/SHA-256 and stages the archive, README and manifest.

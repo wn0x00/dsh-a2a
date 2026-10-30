@@ -85,18 +85,46 @@ export class PersistentTokenStore implements TokenStore {
   }
 }
 
+/** Machine-local state root shared by every platform/profile of this plugin. */
+export function stateStorageBase(root?: string): string {
+  return root ?? process.env.A2A_STORAGE_DIRECTORY ?? (
+    process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA ?? homedir(), 'dsh-a2a')
+      : join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'dsh-a2a')
+  )
+}
+
+/** Storage keyed by an opaque scope string plus the local Harness profile. */
+export function stateStorageDirectory(scope: string, profile: string, root?: string): string {
+  const key = createHash('sha256').update(`${scope}\n${profile}`).digest('hex')
+  return join(stateStorageBase(root), key)
+}
+
 export function profileStorageDirectory(gatewayUrl: string, profile: string, root?: string): string {
   const gateway = new URL(gatewayUrl)
   if (gateway.username || gateway.password || gateway.search || gateway.hash) {
     throw new Error('Platform URL must not contain credentials, query or fragment')
   }
-  const key = createHash('sha256').update(`${gateway.origin}${gateway.pathname.replace(/\/$/u, '')}\n${profile}`).digest('hex')
-  const base = root ?? process.env.A2A_STORAGE_DIRECTORY ?? (
-    process.platform === 'win32'
-      ? join(process.env.LOCALAPPDATA ?? homedir(), 'Xbot', 'a2a')
-      : join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'xbot', 'a2a')
-  )
-  return join(base, key)
+  return stateStorageDirectory(`${gateway.origin}${gateway.pathname.replace(/\/$/u, '')}`, profile, root)
+}
+
+const PLATFORM_FILE = 'platform.json'
+
+/** The standalone diagnostic's last explicitly configured platform address. */
+export async function persistedPlatformUrl(root?: string): Promise<string | undefined> {
+  let raw: string
+  try {
+    raw = await readFile(join(stateStorageBase(root), PLATFORM_FILE), 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw new Error('Unable to read the saved platform address')
+  }
+  const value = JSON.parse(raw) as { gatewayUrl?: unknown }
+  return typeof value.gatewayUrl === 'string' && value.gatewayUrl.trim() ? value.gatewayUrl.trim() : undefined
+}
+
+export async function persistPlatformUrl(gatewayUrl: string, root?: string): Promise<void> {
+  await privateWrite(join(stateStorageBase(root), PLATFORM_FILE), JSON.stringify({ gatewayUrl }))
 }
 
 /** New platform identities deliberately do not reuse the old hostname/Keycloak

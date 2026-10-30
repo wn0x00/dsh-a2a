@@ -1,13 +1,30 @@
 #!/usr/bin/env node
-import { openAuthorizationUrl } from './browser.js'
 import { startOAuthCallbackServer, type OAuthCallbackServer } from './oauth-callback.js'
-import { createPlatformBridgeConfig } from './platform.js'
+import { createPlatformBridgeConfig, normalizePlatformOrigin } from './platform.js'
+import { persistedPlatformUrl, persistPlatformUrl } from './token-store.js'
+import { openAuthorizationUrl } from './browser.js'
 import { createBridge } from './plugin.js'
 import type { HarnessContext } from './types.js'
 
-/** Explicit transport diagnostic. Actual remote execution uses the DSH bundle. */
+function gatewayArgument(): string | undefined {
+  const index = process.argv.indexOf('--gateway')
+  return (index >= 0 ? process.argv[index + 1] : undefined)
+    ?? process.argv.find((arg) => arg.startsWith('--gateway='))?.slice('--gateway='.length)
+}
+
+/** Explicit transport diagnostic. Actual remote execution uses the DSH bundle.
+ * There is no built-in platform address: pass --gateway (persisted for later
+ * runs) or set A2A_GATEWAY_URL. */
 async function main(): Promise<void> {
-  const prepared = await createPlatformBridgeConfig({ executionMode: 'legacy-skill' }, openAuthorizationUrl, 'diagnostic')
+  const explicit = gatewayArgument() ?? (process.env.A2A_GATEWAY_URL?.trim() || undefined)
+  if (explicit) await persistPlatformUrl(normalizePlatformOrigin(explicit))
+  const gatewayUrl = explicit ?? await persistedPlatformUrl()
+  if (!gatewayUrl) {
+    console.error('No platform address configured. Pass --gateway https://platform.example.com (saved for future runs) or set A2A_GATEWAY_URL.')
+    process.exitCode = 1
+    return
+  }
+  const prepared = await createPlatformBridgeConfig({ executionMode: 'legacy-skill', gatewayUrl }, openAuthorizationUrl, 'diagnostic')
   let callback: OAuthCallbackServer | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   const closeCallback = () => {

@@ -104,7 +104,7 @@ function host(workspace, options = {}) {
 
 test('working directory schema stays serializable and preserves ordinary plugin configuration', () => {
   const parsed = Config['~standard'].validate({ gatewayUrl: 'https://platform.example', provider: 'private-provider' })
-  assert.equal(parsed.value.gatewayUrl, 'https://platform.example')
+  assert.equal(parsed.value.gatewayUrl.get(), 'https://platform.example')
   assert.equal(parsed.value.provider.get(), 'private-provider')
   assert.equal(parsed.value.model.get(), '')
   assert.equal(parsed.value.agentPreset.get(), '')
@@ -190,6 +190,17 @@ test('settings hook rejects invalid edits before persistence and only validates 
   assert.throws(() => hook.call(fiber, incompleteModel, () => incompleteModel), /完整的模型/)
   const configuredModel = { provider: 'mimo', model: 'mimo-v2.5-pro' }
   assert.equal(hook.call(fiber, configuredModel, () => configuredModel), configuredModel)
+  // The platform address must be a credential-free HTTPS origin (loopback HTTP
+  // is allowed for local development) and is normalized before persistence.
+  for (const platform of ['http://platform.example', 'https://user:password@platform.example',
+    'https://platform.example/api', 'https://platform.example?token=x', 'not a url']) {
+    const invalid = { gatewayUrl: platform }
+    assert.throws(() => hook.call(fiber, invalid, () => invalid), /平台地址/, platform)
+  }
+  const unconfigured = { gatewayUrl: '  ' }
+  assert.equal(hook.call(fiber, unconfigured, () => unconfigured).gatewayUrl, '')
+  const normalized = { gatewayUrl: ' https://Platform.Example/ ' }
+  assert.equal(hook.call(fiber, normalized, () => normalized).gatewayUrl, 'https://platform.example')
 })
 
 test('selected host directory must map into the current filesystem execution world', async (t) => {

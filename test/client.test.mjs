@@ -77,7 +77,7 @@ async function renderConfiguration(t, options = {}) {
     window: {
       __ModuleLoader__: {
         load: ({ id, factory }) => {
-          assert.equal(id, '@xbot/deepseek-harness-a2a')
+          assert.equal(id, '@guanzhu.me/dsh-a2a')
           client = factory((name) => {
             if (name === 'react') return React
             if (name === 'zod') return Zod
@@ -106,7 +106,7 @@ async function renderConfiguration(t, options = {}) {
   const dispose = await client.apply({
     inject(keys, install) {
       assert.equal(mountedContract, true)
-      assert.ok(keys.includes('remote.xbotA2a'))
+      assert.ok(keys.includes('remote.dshA2a'))
       const cleanup = install(this)
       return {
         dispose: async () => {
@@ -120,7 +120,7 @@ async function renderConfiguration(t, options = {}) {
     },
     configForms: {
       get: (namespace) => {
-        assert.equal(namespace, 'xbot-a2a')
+        assert.equal(namespace, 'dsh-a2a')
         return options.configForm ?? form
       },
     },
@@ -142,8 +142,6 @@ async function renderConfiguration(t, options = {}) {
             'updateStatus',
             'checkUpdate',
             'installUpdate',
-            'setUpdateCredential',
-            'clearUpdateCredential',
           ],
         )
         mountedContract = true
@@ -151,20 +149,19 @@ async function renderConfiguration(t, options = {}) {
           mountedContract = false
         }
       },
-      xbotA2a: {
+      dshA2a: {
         updateStatus: async (signal) => {
           assert.ok(signal instanceof AbortSignal)
           return {
             ok: true,
             value: {
               phase: 'idle',
-              currentVersion: '0.1.10',
+              currentVersion: '0.2.0',
               latestVersion: null,
               checkedAt: null,
               error: null,
               restartReason: null,
               canInstall: false,
-              hasCredential: false,
             },
           }
         },
@@ -173,12 +170,6 @@ async function renderConfiguration(t, options = {}) {
         },
         installUpdate: async () => {
           throw new Error('Updates require an explicit test action')
-        },
-        setUpdateCredential: async () => {
-          throw new Error('Credential changes require an explicit test action')
-        },
-        clearUpdateCredential: async () => {
-          throw new Error('Credential changes require an explicit test action')
         },
         status: async (signal) => {
           assert.ok(signal instanceof AbortSignal)
@@ -305,7 +296,7 @@ async function renderConfiguration(t, options = {}) {
       },
     },
   })
-  assert.equal(registered.metadata.key, '@xbot/deepseek-harness-a2a')
+  assert.equal(registered.metadata.key, '@guanzhu.me/dsh-a2a')
   let view
   await act(async () => {
     view = create(
@@ -705,7 +696,7 @@ async function actualConfigForms() {
   const context = new Cordis.Context()
   const writes = []
   let descriptor = {
-    ns: 'xbot-a2a',
+    ns: 'dsh-a2a',
     revision: 1,
     base: {},
     user: {},
@@ -731,7 +722,7 @@ async function actualConfigForms() {
           value: { writable, namespaces: [descriptor] },
         }),
         mutate: async (namespace, ops, revision) => {
-          assert.equal(namespace, 'xbot-a2a')
+          assert.equal(namespace, 'dsh-a2a')
           assert.equal(revision, descriptor.revision)
           if (!writable) return { ok: false, error: { message: 'read only' } }
           writes.push(ops)
@@ -753,7 +744,7 @@ async function actualConfigForms() {
     ...settings,
   })
   const forms = context.get('configForms')
-  const form = forms.get('xbot-a2a')
+  const form = forms.get('dsh-a2a')
   await forms.describe().ensure()
   return {
     form,

@@ -3,14 +3,14 @@ import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/pr
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
-import { PersistentTokenStore } from './token-store.js'
 
-export const UPDATE_PACKAGE = '@xbot/deepseek-harness-a2a'
-export const UPDATE_BASE_URL =
-  'https://gitea.guanzhu.me/api/packages/xbot/generic/deepseek-harness-a2a/'
-export const UPDATE_LIST_URL =
-  'https://gitea.guanzhu.me/api/v1/packages/xbot?type=generic&q=deepseek-harness-a2a&limit=100'
-const UPDATE_ORIGIN = 'https://gitea.guanzhu.me'
+export const UPDATE_PACKAGE = '@guanzhu.me/dsh-a2a'
+const PACKAGE_BASENAME = 'dsh-a2a'
+const REGISTRY_ORIGIN = 'https://registry.npmjs.org'
+export const UPDATE_METADATA_URL = `${REGISTRY_ORIGIN}/${encodeURIComponent(UPDATE_PACKAGE).replace('%40', '@')}`
+const MAX_METADATA_BYTES = 8 * 1024 * 1024
+const MAX_PACKAGE_BYTES = 8 * 1024 * 1024
+const MAX_TAR_BYTES = 32 * 1024 * 1024
 
 export type PluginUpdatePhase =
   | 'idle' | 'checking' | 'available' | 'current' | 'downloading'
@@ -19,7 +19,6 @@ export type PluginUpdateError =
   | 'network' | 'invalid_manifest' | 'integrity' | 'invalid_package'
   | 'busy' | 'host_unavailable' | 'host_refused' | 'installation_failed'
   | 'installation_unknown' | 'storage' | 'update_changed'
-  | 'credential_required' | 'credential_invalid'
 export type PluginUpdateSnapshot = {
   phase: PluginUpdatePhase
   currentVersion: string
@@ -28,7 +27,6 @@ export type PluginUpdateSnapshot = {
   error: PluginUpdateError | null
   restartReason: string | null
   canInstall: boolean
-  hasCredential: boolean
 }
 
 export type NativePluginChangeResult = {
@@ -67,27 +65,23 @@ export type PluginUpdater = {
   status(): PluginUpdateSnapshot
   check(): Promise<PluginUpdateSnapshot>
   install(expectedVersion: string): Promise<PluginUpdateSnapshot>
-  setCredential(token: string): Promise<PluginUpdateSnapshot>
-  clearCredential(): Promise<PluginUpdateSnapshot>
 }
 
-type ReleaseManifest = {
+/** A frozen registry release: exact tarball plus its npm sha512 integrity. */
+type RegistryRelease = {
   package: typeof UPDATE_PACKAGE
   version: string
+  tarball: string
   filename: string
-  size: number
-  sha256: string
-  generatedAt: string
+  integrity: string
 }
 type Receipt = {
   version: string
-  sha256: string
+  integrity: string
   requestId: string
   phase: 'installing' | 'restart_required' | 'updated' | 'failed'
   restartReason: string | null
 }
-const MAX_PACKAGE_BYTES = 8 * 1024 * 1024
-const MAX_TAR_BYTES = 32 * 1024 * 1024
 const RESTART_REASONS = ['no-hmr', 'package-moved', 'host-module', 'unmanaged-plugin', 'module-comparison']
 const restartReason = (value: unknown): string | null =>
   typeof value === 'string' && RESTART_REASONS.includes(value) ? value : null
@@ -128,24 +122,47 @@ class UpdateFailure extends Error {
   constructor(readonly code: PluginUpdateError) { super(code) }
 }
 
-function manifestFrom(value: unknown): ReleaseManifest {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new UpdateFailure('invalid_manifest')
-  const data = value as Record<string, unknown>
-  if (Object.keys(data).sort().join(',') !== 'filename,generatedAt,package,sha256,size,version'
-    || data.package !== UPDATE_PACKAGE || !validVersion(data.version)
-    || data.filename !== `xbot-deepseek-harness-a2a-${data.version}.tgz`
-    || typeof data.size !== 'number' || !Number.isSafeInteger(data.size)
-    || data.size <= 0 || data.size > MAX_PACKAGE_BYTES
-    || typeof data.sha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(data.sha256)
-    || typeof data.generatedAt !== 'string' || !Number.isFinite(Date.parse(data.generatedAt))) {
+/** Registry metadata names an exact release; the tarball must stay on the
+ * registry origin at the package's own path so metadata cannot redirect the
+ * download to another host. */
+function releaseFrom(version: unknown, dist: unknown): RegistryRelease {
+  if (!validVersion(version)) throw new UpdateFailure('invalid_manifest')
+  const filename = `${PACKAGE_BASENAME}-${version}.tgz`
+  if (!dist || typeof dist !== 'object') throw new UpdateFailure('invalid_manifest')
+  const { tarball, integrity } = dist as Record<string, unknown>
+  if (typeof integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(integrity)) {
     throw new UpdateFailure('invalid_manifest')
   }
-  return Object.freeze({ ...data }) as ReleaseManifest
+  if (typeof tarball !== 'string') throw new UpdateFailure('invalid_manifest')
+  let url: URL
+  try { url = new URL(tarball) } catch { throw new UpdateFailure('invalid_manifest') }
+  if (url.origin !== REGISTRY_ORIGIN || url.username || url.password || url.search || url.hash
+    || url.pathname !== `/${UPDATE_PACKAGE}/-/${filename}`) {
+    throw new UpdateFailure('invalid_manifest')
+  }
+  return Object.freeze({ package: UPDATE_PACKAGE, version, tarball, filename, integrity })
 }
 
-/** Check the archive's identity before native installation can execute package code. */
-function verifyArchive(bytes: Buffer, release: ReleaseManifest): void {
-  if (bytes.length !== release.size || createHash('sha256').update(bytes).digest('hex') !== release.sha256) {
+/** Pick the highest strictly versioned release in the registry document. */
+function latestRelease(document: unknown): RegistryRelease | undefined {
+  if (!document || typeof document !== 'object' || Array.isArray(document)) throw new UpdateFailure('invalid_manifest')
+  const versions = (document as Record<string, unknown>).versions
+  if (!versions || typeof versions !== 'object' || Array.isArray(versions)) throw new UpdateFailure('invalid_manifest')
+  let newest: RegistryRelease | undefined
+  for (const [version, entry] of Object.entries(versions as Record<string, unknown>)) {
+    if (!validVersion(version)) continue
+    if (!entry || typeof entry !== 'object') continue
+    const candidate = releaseFrom(version, (entry as Record<string, unknown>).dist)
+    if (!newest || comparePluginVersions(candidate.version, newest.version) > 0) newest = candidate
+  }
+  return newest
+}
+
+/** Check the archive's integrity and identity before native installation can
+ * execute package code. */
+function verifyArchive(bytes: Buffer, release: RegistryRelease): void {
+  const digest = `sha512-${createHash('sha512').update(bytes).digest('base64')}`
+  if (digest !== release.integrity || bytes.length > MAX_PACKAGE_BYTES) {
     throw new UpdateFailure('integrity')
   }
   try {
@@ -187,18 +204,12 @@ async function privateDirectory(path: string): Promise<void> {
   if (process.platform !== 'win32') await chmod(path, 0o700)
 }
 
-function validCredential(token: unknown): token is string {
-  return typeof token === 'string' && token.length > 0 && token.length <= 4096
-    && /^[\x21-\x7e]+$/u.test(token)
-}
-
-async function fetchBytes(url: string, limit: number, options: PluginUpdaterOptions, token: string): Promise<Buffer> {
+async function fetchBytes(url: string, limit: number, options: PluginUpdaterOptions): Promise<Buffer> {
   const target = new URL(url)
-  if (target.origin !== UPDATE_ORIGIN || target.username || target.password || target.hash
-    || !(url.startsWith(UPDATE_BASE_URL) || url.startsWith(`${UPDATE_LIST_URL}&page=`))) {
+  if (target.origin !== REGISTRY_ORIGIN || target.username || target.password || target.hash
+    || !(url === UPDATE_METADATA_URL || url.startsWith(`${REGISTRY_ORIGIN}/${UPDATE_PACKAGE}/-/`))) {
     throw new UpdateFailure('network')
   }
-  if (!validCredential(token)) throw new UpdateFailure('credential_invalid')
   const controller = new AbortController()
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -215,11 +226,11 @@ async function fetchBytes(url: string, limit: number, options: PluginUpdaterOpti
         method: 'GET',
         redirect: 'error', signal: controller.signal,
         headers: {
-          Accept: url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json',
-          Authorization: `token ${token}`,
+          Accept: url === UPDATE_METADATA_URL
+            ? 'application/vnd.npm.install-v1+json'
+            : 'application/octet-stream',
         },
       })
-      if (response.status === 401 || response.status === 403) throw new UpdateFailure('credential_invalid')
       if (!response.ok || response.redirected || (response.url && response.url !== url) || !response.body) throw new UpdateFailure('network')
       const declared = response.headers.get('content-length')
       if (declared && (!/^\d+$/u.test(declared) || Number(declared) > limit)) throw new UpdateFailure('integrity')
@@ -244,42 +255,21 @@ async function fetchBytes(url: string, limit: number, options: PluginUpdaterOpti
   }
 }
 
-async function newestRelease(options: PluginUpdaterOptions, token: string): Promise<string | undefined> {
-  let newest: string | undefined
-  // Request each page until empty: a Host may cap limit below our requested 100.
-  // Bound the total to prevent a faulty API from cycling nonempty pages forever.
-  for (let page = 1; page <= 100; page++) {
-    const bytes = await fetchBytes(`${UPDATE_LIST_URL}&page=${page}`, 1024 * 1024, options, token)
-    let records: unknown
-    try { records = JSON.parse(bytes.toString()) } catch { throw new UpdateFailure('invalid_manifest') }
-    if (!Array.isArray(records)) throw new UpdateFailure('invalid_manifest')
-    if (records.length === 0) return newest
-    for (const record of records) {
-      if (!record || typeof record !== 'object' || record.type !== 'generic'
-        || record.name !== 'deepseek-harness-a2a' || !validVersion(record.version)) continue
-      if (!newest || comparePluginVersions(record.version, newest) > 0) newest = record.version
-    }
-  }
-  throw new UpdateFailure('invalid_manifest')
-}
-
 export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdater {
   if (!validVersion(options.currentVersion)) throw new Error('Invalid current plugin version')
   const directory = join(options.storageDirectory, 'updates')
   const receiptPath = join(directory, 'last-update.json')
-  const credentialDirectory = join(options.storageDirectory, 'gitea-updater')
-  const credentialStore = new PersistentTokenStore(credentialDirectory)
-  let hasCredential = existsSync(join(credentialDirectory, 'credentials.json'))
-  let manifest: ReleaseManifest | undefined
+  let release: RegistryRelease | undefined
   let receipt: Receipt | undefined
   let busy = false
-  let snapshot: Omit<PluginUpdateSnapshot, 'canInstall' | 'hasCredential'> = {
+  let snapshot: Omit<PluginUpdateSnapshot, 'canInstall'> = {
     phase: 'idle', currentVersion: options.currentVersion, latestVersion: null,
     checkedAt: null, error: null, restartReason: null,
   }
   try {
     const raw = JSON.parse(readFileSync(receiptPath, 'utf8')) as Receipt
-    if (!validVersion(raw.version) || !/^[0-9a-f]{64}$/u.test(raw.sha256)
+    if (!validVersion(raw.version) || typeof raw.integrity !== 'string'
+      || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(raw.integrity)
       || typeof raw.requestId !== 'string' || raw.requestId.length > 128
       || (raw.restartReason !== null && typeof raw.restartReason !== 'string')
       || !['installing', 'restart_required', 'updated', 'failed'].includes(raw.phase)) throw new Error('receipt')
@@ -297,8 +287,7 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
     }
   }
   const status = (): PluginUpdateSnapshot => ({ ...snapshot,
-    hasCredential,
-    canInstall: !busy && hasCredential && snapshot.phase === 'available' && !!manifest && options.canInstall() && !!options.manager(),
+    canInstall: !busy && snapshot.phase === 'available' && !!release && options.canInstall() && !!options.manager(),
   })
   const errorCode = (error: unknown): PluginUpdateError => error instanceof UpdateFailure ? error.code
     : (error as { code?: string } | null)?.code === 'busy' ? 'busy' : 'storage'
@@ -314,69 +303,25 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
     } finally { await rm(temporary, { force: true }) }
     receipt = value
   }
-  const loadCredential = async (): Promise<string> => {
-    const saved = await credentialStore.get()
-    hasCredential = !!saved && validCredential(saved.accessToken)
-    if (!hasCredential) throw new UpdateFailure('credential_required')
-    return saved!.accessToken
-  }
-  const readRelease = async (token: string, latest: string | undefined) => {
-    manifest = undefined
-    if (!latest) {
+  const checkRegistry = async () => {
+    release = undefined
+    const bytes = await fetchBytes(UPDATE_METADATA_URL, MAX_METADATA_BYTES, options)
+    let parsed: unknown
+    try { parsed = JSON.parse(bytes.toString()) } catch { throw new UpdateFailure('invalid_manifest') }
+    const found = latestRelease(parsed)
+    if (!found || comparePluginVersions(found.version, options.currentVersion) <= 0) {
       snapshot = { ...snapshot, phase: 'current', latestVersion: null,
         checkedAt: Date.now(), error: null, restartReason: null }
       return
     }
-    const bytes = await fetchBytes(`${UPDATE_BASE_URL}${encodeURIComponent(latest)}/release-manifest.json`, 16 * 1024, options, token)
-    let parsed: unknown
-    try { parsed = JSON.parse(bytes.toString()) } catch { throw new UpdateFailure('invalid_manifest') }
-    const found = manifestFrom(parsed)
-    if (found.version !== latest) throw new UpdateFailure('invalid_manifest')
-    manifest = found
+    release = found
     snapshot = { ...snapshot,
-      phase: comparePluginVersions(manifest.version, options.currentVersion) > 0 ? 'available' : 'current',
-      latestVersion: manifest.version, checkedAt: Date.now(), error: null, restartReason: null,
+      phase: 'available', latestVersion: found.version,
+      checkedAt: Date.now(), error: null, restartReason: null,
     }
   }
   return {
     status,
-    async setCredential(token) {
-      if (busy) return { ...status(), error: 'busy' }
-      const previous = snapshot
-      const preserveOutcome = ['outcome_unknown', 'restart_required'].includes(snapshot.phase)
-      busy = true
-      if (!preserveOutcome) snapshot = { ...snapshot, phase: 'checking', error: null }
-      try {
-        if (!validCredential(token)) throw new UpdateFailure('credential_invalid')
-        const latest = await newestRelease(options, token)
-        await credentialStore.set({ accessToken: token, expiresAt: Number.MAX_SAFE_INTEGER })
-        hasCredential = true
-        if (!preserveOutcome) await readRelease(token, latest)
-      } catch (error) {
-        // A rejected replacement never removes or overwrites the saved token.
-        if (preserveOutcome) snapshot = { ...previous, error: errorCode(error) }
-        else fail(error)
-      } finally { busy = false }
-      return status()
-    },
-    async clearCredential() {
-      if (busy) return { ...status(), error: 'busy' }
-      const previous = snapshot
-      busy = true
-      try {
-        await credentialStore.clear()
-        hasCredential = false
-        manifest = undefined
-        if (!['outcome_unknown', 'restart_required'].includes(snapshot.phase)) {
-          snapshot = { ...snapshot, phase: 'idle', error: null, latestVersion: null }
-        }
-      } catch (error) {
-        if (['outcome_unknown', 'restart_required'].includes(previous.phase)) snapshot = { ...previous, error: errorCode(error) }
-        else fail(error)
-      }
-      finally { busy = false }
-      return status()
-    },
     async check() {
       if (busy) return status()
       busy = true
@@ -410,8 +355,7 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
           return status()
         }
         snapshot = { ...snapshot, phase: 'checking', error: null }
-        const token = await loadCredential()
-        await readRelease(token, await newestRelease(options, token))
+        await checkRegistry()
       } catch (error) {
         if (receipt && receipt.phase !== 'failed' && comparePluginVersions(options.currentVersion, receipt.version) < 0) {
           snapshot = { ...snapshot, phase: 'outcome_unknown', error: 'installation_unknown' }
@@ -422,15 +366,15 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
     },
     async install(expectedVersion) {
       if (busy || snapshot.phase === 'outcome_unknown' || snapshot.phase === 'restart_required') return status()
-      if (snapshot.phase !== 'available' || !manifest) return status()
-      if (expectedVersion !== manifest.version) {
+      if (snapshot.phase !== 'available' || !release) return status()
+      if (expectedVersion !== release.version) {
         snapshot = { ...snapshot, error: 'update_changed' }
         return status()
       }
       if (!options.canInstall()) { snapshot = { ...snapshot, error: 'busy' }; return status() }
       const manager = options.manager()
       if (!manager) { snapshot = { ...snapshot, error: 'host_unavailable' }; return status() }
-      const release = manifest
+      const selected = release
       busy = true
       let handedOff = false
       let releaseLock: (() => Promise<void>) | undefined
@@ -438,28 +382,27 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
         releaseLock = await options.acquireInstallLock()
         if (!options.canInstall()) throw new UpdateFailure('busy')
         snapshot = { ...snapshot, phase: 'downloading', error: null }
-        const token = await loadCredential()
-        const bytes = await fetchBytes(`${UPDATE_BASE_URL}${encodeURIComponent(release.version)}/${encodeURIComponent(release.filename)}`, release.size, options, token)
-        verifyArchive(bytes, release)
+        const bytes = await fetchBytes(selected.tarball, MAX_PACKAGE_BYTES, options)
+        verifyArchive(bytes, selected)
         // Keep the exact tarball: native pnpm records this file dependency and
         // may need it again after a restart or dependency repair.
-        const cache = join(directory, release.sha256)
+        const cache = join(directory, createHash('sha256').update(selected.integrity).digest('hex'))
         await privateDirectory(directory)
         await privateDirectory(cache)
-        const artifact = join(cache, release.filename)
+        const artifact = join(cache, selected.filename)
         try { await writeFile(artifact, bytes, { mode: 0o600, flag: 'wx' }) }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
         const info = await lstat(artifact)
-        if (!info.isFile() || info.isSymbolicLink() || info.size !== release.size) throw new UpdateFailure('integrity')
+        if (!info.isFile() || info.isSymbolicLink() || info.size !== bytes.length) throw new UpdateFailure('integrity')
         if (process.platform !== 'win32') await chmod(artifact, 0o600)
-        verifyArchive(await readFile(artifact), release)
+        verifyArchive(await readFile(artifact), selected)
         {
           if (!options.canInstall()) throw new UpdateFailure('busy')
           const bundle = (await manager.listBundles()).find(value => value.name === UPDATE_PACKAGE)
           if (!bundle?.installed || bundle.availability !== 'profile') throw new UpdateFailure('host_unavailable')
           if (!options.canInstall()) throw new UpdateFailure('busy')
-          if (bundle.version && comparePluginVersions(release.version, bundle.version) <= 0) throw new UpdateFailure('host_refused')
-          const nextReceipt: Receipt = { version: release.version, sha256: release.sha256,
+          if (bundle.version && comparePluginVersions(selected.version, bundle.version) <= 0) throw new UpdateFailure('host_refused')
+          const nextReceipt: Receipt = { version: selected.version, integrity: selected.integrity,
             requestId: randomUUID(), phase: 'installing', restartReason: null }
           await saveReceipt(nextReceipt)
           if (!options.canInstall()) {
@@ -479,7 +422,7 @@ export function createPluginUpdater(options: PluginUpdaterOptions): PluginUpdate
             throw new UpdateFailure(result.error?.code === 'already-installed' || result.error?.code === 'incompatible-version'
               ? 'host_refused' : 'installation_failed')
           }
-          if (result.bundle !== UPDATE_PACKAGE || result.version !== release.version
+          if (result.bundle !== UPDATE_PACKAGE || result.version !== selected.version
             || (result.application !== 'applied' && result.application !== 'restart-required')) {
             throw new UpdateFailure('installation_unknown')
           }

@@ -1,46 +1,51 @@
-# DeepSeek Harness A2A Bridge
+# DSH A2A Bridge
 
-Canonical source: [xbot/deepseek-harness-a2a](https://gitea.guanzhu.me/xbot/deepseek-harness-a2a)
-(private repository). Develop and review plugin changes here. The platform keeps a
-pinned vendor snapshot for its builds and source download; sync a reviewed source
-commit instead of editing that copy.
+Canonical source: [wn0x00/dsh-a2a](https://github.com/wn0x00/dsh-a2a).
+The package is published to npm as
+[`@guanzhu.me/dsh-a2a`](https://www.npmjs.com/package/@guanzhu.me/dsh-a2a) with
+OIDC trusted publishing; every release is built and published by GitHub Actions
+with provenance.
 
-Maintainer documentation: [architecture](https://gitea.guanzhu.me/xbot/deepseek-harness-a2a/src/branch/main/docs/ARCHITECTURE.md)
-and [release / platform synchronization](https://gitea.guanzhu.me/xbot/deepseek-harness-a2a/src/branch/main/docs/RELEASE.md).
+Maintainer documentation: [architecture](docs/ARCHITECTURE.md) and
+[release](docs/RELEASE.md).
 
 This Cordis bundle loads **inside DeepSeek Harness** through its `dsh.bundle`
 manifest and `cordis.patch.yml`. It receives the real `ctx.agents` service,
 receives standard A2A Messages and returns Task status and result artifacts.
-It requires Node 22.19+ and DSH 0.2.1-rc.2 or newer in the 0.2 series. The separate executable is a transport
-diagnostic; installing that executable alone does not enable a Harness plugin.
+It requires Node 22.19+ and DSH 0.2.1-rc.2 or newer in the 0.2 series. The
+separate executable is a transport diagnostic; installing that executable alone
+does not enable a Harness plugin.
+
+## Platform address
+
+The plugin ships **without a built-in platform (OAuth authorization) address**.
+Before the first connection, open **设置 → Xbot 平台任务**, fill in **平台地址**
+(the platform's HTTPS origin, for example `https://platform.example.com`;
+loopback `http://127.0.0.1` is accepted for local development) and select
+**保存任务配置**. The address is validated, normalized to its origin and
+persisted in the local Harness configuration; changing it later switches to a
+separate local credential profile and requires fresh authorization.
+
+The standalone diagnostic takes the address from `--gateway` (saved for later
+runs) or `A2A_GATEWAY_URL`:
+
+```powershell
+npx @guanzhu.me/dsh-a2a --gateway https://platform.example.com
+```
 
 ## Install or update
 
-Download version **0.1.11** from
-[Gitea Packages](https://gitea.guanzhu.me/xbot/-/packages?q=deepseek-harness-a2a).
-Sign in with an account that can read the private `xbot` organization packages.
-Choose `xbot-deepseek-harness-a2a-0.1.11.tgz`; `release-manifest.json` records its
-size and SHA-256. Plugin packages are released independently of platform CI/CD.
-The platform's pinned download may therefore be an older version.
+Install the current version from the public npm registry. In the Windows
+graphical client:
 
-The first update from 0.1.9 or 0.1.10 is manual. Version 0.1.10 could disable
-its own update controls because it checked a settings field Harness does not
-provide; 0.1.11 fixes that check. From 0.1.11 onward, **Xbot 平台任务 →
-插件更新** can check and install newer Gitea packages after you configure a
-read-only credential. It never installs updates automatically in the background.
-
-In the Windows graphical client:
-
-1. Open **Plugins**. For the first manual upgrade from 0.1.9 or 0.1.10, uninstall the old
-   version before adding the new archive through the graphical installer.
-2. Select **Add plugin**. In **包名或地址**, enter the downloaded file's full
-   path, such as `C:\Users\your-name\Downloads\xbot-deepseek-harness-a2a-0.1.11.tgz`.
-3. In **安装源**, select the npm official registry (`https://registry.npmjs.org/`)
-   or a working default registry. A plugin `.tgz` URL belongs in **包名或地址**,
-   never in **安装源** / `--registry`.
-4. Install, then click **立即启用 / Enable now**. Successful pnpm output only
+1. Open **Plugins**, select **Add plugin**. In **包名或地址**, enter
+   `@guanzhu.me/dsh-a2a` (or the full path of a downloaded `.tgz`).
+2. In **安装源**, select the npm official registry
+   (`https://registry.npmjs.org/`) or a working default registry. A plugin
+   `.tgz` URL belongs in **包名或地址**, never in **安装源** / `--registry`.
+3. Install, then click **立即启用 / Enable now**. Successful pnpm output only
    confirms installation; the graphical client installs bundles disabled.
-5. Fully exit and restart Harness. Check the installed version is **0.1.11**.
+4. Fully exit and restart Harness, then configure **平台地址** as above.
 
 Perform these steps in the same graphical client/profile. An installation in a
 separate CLI profile does not activate it in the graphical client. Uninstalling
@@ -49,19 +54,7 @@ the bundle does not remove the bridge's separately stored platform credentials.
 For a CLI profile:
 
 ```powershell
-dsh plugin --profile demo add .\xbot-deepseek-harness-a2a-0.1.11.tgz
-dsh --profile demo
-```
-
-The production package published in Gitea Packages connects to
-`https://agent.guanzhu.me` by default. Local source builds keep
-`http://127.0.0.1:8000`; no Keycloak configuration is required. A release build
-can set `XBOT_DEFAULT_GATEWAY_URL` to its HTTPS platform origin. For another
-platform, set its backend/public gateway URL before
-launching Harness, or set the plugin's `gatewayUrl` configuration:
-
-```powershell
-$env:A2A_GATEWAY_URL = 'https://platform.example.com'
+dsh plugin --profile demo add @guanzhu.me/dsh-a2a
 dsh --profile demo
 ```
 
@@ -74,22 +67,20 @@ internal tools.
 
 ## Updates inside Harness
 
-Open **Xbot 平台任务 → 插件更新 → 更新源授权**. Create a personal access token in
-[Gitea applications settings](https://gitea.guanzhu.me/user/settings/applications)
-with only `read:package` permission. Its account must be able to read `xbot`
-packages. Paste it once and choose **保存凭据**. The field clears immediately;
-only whether a credential is configured is returned to the settings page.
-Windows stores it with account-bound DPAPI; other systems use a private local
-file. It is separate from platform authorization and never enters Harness's
-ordinary configuration document. **移除凭据** removes only this update credential.
+Open **Xbot 平台任务 → 插件更新** and select **检查更新**. The update source is
+the public npm registry: the plugin reads the `@guanzhu.me/dsh-a2a` registry
+document, selects the highest published strict SemVer version and freezes that
+exact release for confirmation. No credential or token is required or stored.
+Only GET requests to `registry.npmjs.org` are issued; redirects and tarballs on
+any other origin are rejected.
 
-**检查更新** reads the private Generic package registry and release manifest.
-**更新到 <版本>** asks you to confirm that exact version, then downloads and
-verifies the archive's size, SHA-256 and package identity before handing it to
-Harness's native Plugin Manager. Tasks or pending authorization block installation.
-An idle connection pauses new work during installation and resumes afterwards.
-The native installer preserves the bundle's configuration; the plugin does not
-uninstall itself or execute custom package-manager shell commands.
+**更新到 <版本>** asks you to confirm that exact version, then downloads the
+registry tarball and verifies its npm `dist.integrity` (SHA-512) and the
+archive's package identity before handing it to Harness's native Plugin
+Manager. Tasks or pending authorization block installation. An idle connection
+pauses new work during installation and resumes afterwards. The native
+installer preserves the bundle's configuration; the plugin does not uninstall
+itself or execute custom package-manager shell commands.
 
 When **更新已安装，等待重启** appears, fully exit and reopen Harness. If the client
 loses the installation reply, use **核对更新结果**. A missing reply is not a
@@ -101,20 +92,20 @@ a local file dependency.
 
 ## Platform account authorization
 
-Open **设置 → Xbot 平台任务**, optionally set **设备名称** and **设备描述**,
-then select **保存任务配置** and **连接平台**. The plugin reads the platform's
-authorization metadata, creates a device authorization request with an S256
-PKCE challenge, and opens the platform's **连接本地智能体** authorization page. Sign in with your platform
-account and approve the displayed Harness instance. Return to **子 Agent** and
-select the local agent; the list refreshes and configuration saves automatically.
-No client secret or platform admin session is
-stored in Harness. The loopback callback is
+Open **设置 → Xbot 平台任务**, set **平台地址**, optionally set **设备名称** and
+**设备描述**, then select **保存任务配置** and **连接平台**. The plugin reads the
+platform's authorization metadata, creates a device authorization request with
+an S256 PKCE challenge, and opens the platform's **连接本地智能体** authorization
+page. Sign in with your platform account and approve the displayed Harness
+instance. Return to **子 Agent** and select the local agent; the list refreshes
+and configuration saves automatically. No client secret or platform admin
+session is stored in Harness. The loopback callback is
 `http://127.0.0.1:43127/oauth/callback`; it listens only while authorization is
 pending and closes after completion or ten minutes. If a browser does not open,
 the connection card reports the failure; retry from the settings page. After a
-timeout or denied request, select **连接平台** again to create a fresh authorization
-request. The settings page does not expose authorization URLs, PKCE state or
-credentials.
+timeout or denied request, select **连接平台** again to create a fresh
+authorization request. The settings page does not expose authorization URLs,
+PKCE state or credentials.
 Startup only restores saved credentials; it never opens a consent page by itself.
 The local callback displays success only after token exchange and device
 registration finish. It then attempts the desktop's fixed `dsh://open` command
@@ -122,17 +113,18 @@ and offers **打开 DeepSeek Harness** if the browser requires a click. This
 foreground action carries no authorization code or token. The top-level loopback
 redirect remains the credential channel; no cloud-to-loopback fetch is used.
 
-The connection card shows the live state: **已连接**, **需要授权**,
-**等待浏览器授权**, **正在连接**, **连接中断**, or **连接失败**. It also displays the
-platform, device identity, active task count and recent connection/contact times.
-**刷新状态** reads the current host state; a settings save does not imply a
-successful connection. A status-read failure means the settings page cannot
-read its local Harness service; it is not evidence that platform authorization
-expired. Enable the plugin and, if it was just installed or updated, fully exit and reopen Harness
-before refreshing. The page hides authorization actions until it can read the
-service again. Cached information is explicitly marked stale. Status requests
-have a cancellation deadline, and retries do not overlap. Diagnostic details
-show only known error codes, never upstream errors or credentials.
+The connection card shows the live state: **需要配置平台地址**, **已连接**,
+**需要授权**, **等待浏览器授权**, **正在连接**, **连接中断**, or **连接失败**.
+It also displays the platform, device identity, active task count and recent
+connection/contact times. **刷新状态** reads the current host state; a settings
+save does not imply a successful connection. A status-read failure means the
+settings page cannot read its local Harness service; it is not evidence that
+platform authorization expired. Enable the plugin and, if it was just installed
+or updated, fully exit and reopen Harness before refreshing. The page hides
+authorization actions until it can read the service again. Cached information
+is explicitly marked stale. Status requests have a cancellation deadline, and
+retries do not overlap. Diagnostic details show only known error codes, never
+upstream errors or credentials.
 
 Connection and update controls use the real Harness configuration readiness and
 `writable` flag. A disabled connection action explains whether the configuration
@@ -151,17 +143,16 @@ device registration fails, the plugin keeps the new tokens and shows the failure
 **连接平台** retries registration. Cancellation does not revoke a previously
 connected device's grant.
 
-Version 0.1.3 creates a new random device identity, persisted separately for
-each platform and Harness profile. **An old Keycloak device is not automatically
-claimed.** Authorize the new device with the intended platform account, then
+Each platform address and Harness profile gets its own random device identity,
+persisted locally. Authorize the device with the intended platform account, then
 select the local agent again in the calling Agent's **子 Agent** configuration.
 Existing `A2A_OIDC_ISSUER_URL` and `A2A_DEVICE_ID` environment variables do not
 change platform-mode authorization or import an old device identity.
 
 Access and refresh credentials survive restarts. Windows protects them with
-DPAPI for the current signed-in Windows account under `%LOCALAPPDATA%\Xbot\a2a`.
+DPAPI for the current signed-in Windows account under `%LOCALAPPDATA%\dsh-a2a`.
 Linux/macOS use a user-only directory and mode-0600 credential file under
-`$XDG_STATE_HOME/xbot/a2a` (default `~/.local/state/xbot/a2a`). Profiles and
+`$XDG_STATE_HOME/dsh-a2a` (default `~/.local/state/dsh-a2a`). Profiles and
 platforms use distinct directories. Do not copy credential storage between
 users. A profile lock prevents two processes from rotating the same credential.
 The lock is released when the plugin stops; a stale lock from an exited process
@@ -169,14 +160,16 @@ is recovered on the next start.
 
 The plugin rotates refresh tokens before access-token expiry. If the platform
 revokes the grant or it expires, polling pauses without opening a browser.
-Select **连接平台** in Harness settings when you want to authorize again. Removing a target
-with the trash icon in **子 Agent** changes only that calling Agent's configuration;
-it does not revoke the shared device grant. A revoked grant requires fresh approval.
-The device name defaults to `DeepSeek Harness (<computer name>)`. **设备名称**
-overrides that default (and the existing `A2A_DEVICE_NAME` fallback). The optional
-**设备描述** is limited to 1,000 characters. Saving these fields on an already
-connected device updates its platform directory entry and per-device A2A Card;
-it does not change the global platform gateway Card or any hosted Agent's name/persona. Neither field grants tools or permissions.
+Select **连接平台** in Harness settings when you want to authorize again. Removing
+a target with the trash icon in **子 Agent** changes only that calling Agent's
+configuration; it does not revoke the shared device grant. A revoked grant
+requires fresh approval. The device name defaults to
+`DeepSeek Harness (<computer name>)`. **设备名称** overrides that default (and the
+existing `A2A_DEVICE_NAME` fallback). The optional **设备描述** is limited to
+1,000 characters. Saving these fields on an already connected device updates its
+platform directory entry and per-device A2A Card; it does not change the global
+platform gateway Card or any hosted Agent's name/persona. Neither field grants
+tools or permissions.
 
 `A2A_PROFILE` or the plugin `profile` property can
 explicitly select credential isolation for a custom host; native Harness uses
@@ -190,13 +183,13 @@ device grants. The backend must separately support the external issuer.
 ## Workspace and conversations
 
 Open **设置 → Xbot 平台任务**, also available in
-**Plugins → @xbot/deepseek-harness-a2a → 配置**. **工作区（项目目录）** is one
-directory setting: choose an existing Harness workspace, pick a local folder,
-or enter a full path. These are three ways to choose the same directory. The
-first task registers that directory as a native workspace and attaches its
-session, so it appears under that directory in the left sidebar. **使用 Harness
-默认目录** uses the host's default directory; it does not follow whichever
-workspace is temporarily selected in the browser. Choose an **Agent 预设（工具集）** and
+**Plugins → @guanzhu.me/dsh-a2a → 配置**. **工作区（项目目录）** is one directory
+setting: choose an existing Harness workspace, pick a local folder, or enter a
+full path. These are three ways to choose the same directory. The first task
+registers that directory as a native workspace and attaches its session, so it
+appears under that directory in the left sidebar. **使用 Harness 默认目录** uses
+the host's default directory; it does not follow whichever workspace is
+temporarily selected in the browser. Choose an **Agent 预设（工具集）** and
 **模型** from the host's actual catalogs, then select **保存任务配置**. Empty values
 inherit Harness defaults; clearing an override restores inheritance. The host
 checks that the directory exists and is accessible before saving and execution.
@@ -259,9 +252,7 @@ sidebar or close its handle. Plugin shutdown still cancels Agent-owned
 background jobs; the Windows ACL runner also uses `KILL_ON_JOB_CLOSE`. Shell
 submission or a completed Task alone does not prove that a visible window opened
 or remains open. The adapter mounts the selected native
-Agent preset to supply tools and preserves Harness sandbox enforcement. Start a
-new platform conversation when upgrading a context created by 0.1.5 without a
-recorded Agent preset.
+Agent preset to supply tools and preserves Harness sandbox enforcement.
 
 ## Build and diagnostic runner
 
@@ -270,17 +261,17 @@ revocation without browser popups, explicit reconnection, callback completion,
 identity settings, native execution and package metadata.
 `npm run pack:release` stages the `.tgz`, README and SHA-256 release manifest in
 this repository's `release/` directory. Set `XBOT_RELEASE_DIR` to another directory
-(relative to the package root, or absolute) when exporting a release to the
-platform. Build and test with Node 22.19+ and `npm ci`; the package is private and
-is distributed as a versioned tarball, not published to the public npm registry.
+(relative to the package root, or absolute) when exporting a release. Build and
+test with Node 22.19+ and `npm ci`; the package is public on npm and published
+exclusively by GitHub Actions through OIDC trusted publishing.
 
 For transport diagnosis without Harness:
 
 ```powershell
-npm install .\xbot-deepseek-harness-a2a-0.1.11.tgz
-npx xbot-deepseek-harness-a2a
+npm install @guanzhu.me/dsh-a2a
+npx dsh-a2a --gateway https://platform.example.com
 # Revoke this diagnostic profile's authorization:
-npx xbot-deepseek-harness-a2a --logout
+npx dsh-a2a --logout
 ```
 
 The diagnostic runner has its own profile/device and a literal echo handler. Use

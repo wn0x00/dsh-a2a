@@ -1,0 +1,42 @@
+name: Publish
+
+# Publish is gated by a GitHub Release: create a release whose tag is
+# v<version> matching package.json. npm authenticates through OIDC trusted
+# publishing — no NPM_TOKEN secret exists anywhere in this repository.
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC token for npm trusted publishing and provenance
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm for trusted publishing
+        # Trusted publishing requires npm CLI >= 11.5.1.
+        run: npm install -g npm@latest --no-audit --no-fund
+
+      - name: Verify the release tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match package.json version ${version}" >&2
+            exit 1
+          fi
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+      # publishConfig in package.json sets access: public and provenance: true.
+      - run: npm publish

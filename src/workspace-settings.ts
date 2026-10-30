@@ -2,12 +2,14 @@ import { realpathSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
+import { normalizePlatformOrigin } from './platform.js'
 import type { HarnessCordisContext, HarnessPluginConfig } from './types.js'
 
 // Keep the schema browser-safe: DSH serializes volatile fields into configForms.
 // Host-only validation belongs to internal/config, never to a schema callback.
 export const Config = z
   .object({
+    gatewayUrl: z.string().max(500).default('').volatile(),
     deviceName: z.string().max(200).default('').volatile(),
     deviceDescription: z.string().max(1000).default('').volatile(),
     connectionRequest: z.string().max(128).default('').volatile(),
@@ -74,11 +76,21 @@ export function installWorkspaceSettings(
     const candidate = next() as Record<string, unknown>
     // Cordis supplies a traced fiber proxy to plugins; the config editor
     // dispatches the original fiber. Compare the root-unique runtime uid too.
-    if (
-      this !== ctx.fiber &&
-      (ctx.fiber?.uid === undefined || this.uid !== ctx.fiber.uid)
-    )
+    if (this !== ctx.fiber &&
+      (ctx.fiber?.uid === undefined || this.uid !== ctx.fiber.uid))
       return candidate
+    // The platform address persists as a normalized origin; it is never a
+    // credential, so the plain string value may stay in the host config.
+    const platform = candidate?.gatewayUrl
+    if (typeof platform === 'string' && platform.trim()) {
+      try {
+        candidate.gatewayUrl = normalizePlatformOrigin(platform.trim())
+      } catch {
+        throw new Error('平台地址必须是 HTTPS 源站（如 https://platform.example.com），本机调试才允许 http://127.0.0.1 回环地址。')
+      }
+    } else if (platform !== undefined) {
+      candidate.gatewayUrl = ''
+    }
     const value = candidate?.workingDirectory
     if (value !== undefined && value !== '') {
       executionPath(ctx, validateHostDirectory(value))
@@ -102,7 +114,7 @@ export function installWorkspaceSettings(
       executionPath(ctx, validateHostDirectory(initial))
     } catch (error) {
       console.warn(
-        '[xbot-deepseek-harness-a2a] working directory requires attention:',
+        '[dsh-a2a] working directory requires attention:',
         error instanceof Error ? error.message : 'Invalid directory',
       )
     }

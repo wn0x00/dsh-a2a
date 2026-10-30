@@ -8,6 +8,7 @@ export function connectionContribution(
   const snapshot = z.strictObject({
     phase: z.enum([
       'starting',
+      'configuration_required',
       'disconnected',
       'authorizing',
       'connecting',
@@ -48,26 +49,17 @@ export function connectionContribution(
       'network', 'invalid_manifest', 'integrity', 'invalid_package', 'busy',
       'host_unavailable', 'host_refused', 'installation_failed',
       'installation_unknown', 'storage', 'update_changed',
-      'credential_required', 'credential_invalid',
     ]).nullable(),
     restartReason: z.string().max(80).nullable(),
     canInstall: z.boolean(),
-    hasCredential: z.boolean(),
   })
-  const packageName = '@xbot/deepseek-harness-a2a'
+  const packageName = '@guanzhu.me/dsh-a2a'
   const version = z.string().max(80).regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u)
   const versionCodec = {
     mode: 'strict' as const,
     typeSymbol: `${packageName}#ExpectedPluginVersion`,
     create: () => version,
     jsonSchema: z.toJSONSchema(version),
-  }
-  const token = z.string().max(4096).trim().min(1).regex(/^[\x21-\x7e]+$/u)
-  const tokenCodec = {
-    mode: 'strict' as const,
-    typeSymbol: `${packageName}#UpdateCredential`,
-    create: () => token,
-    jsonSchema: z.toJSONSchema(token),
   }
   return {
     package: packageName,
@@ -79,23 +71,18 @@ export function connectionContribution(
       'updateStatus',
       'checkUpdate',
       'installUpdate',
-      'setUpdateCredential',
-      'clearUpdateCredential',
     ].map((method) => {
-      const updates = ['updateStatus', 'checkUpdate', 'installUpdate', 'setUpdateCredential', 'clearUpdateCredential'].includes(method)
+      const updates = ['updateStatus', 'checkUpdate', 'installUpdate'].includes(method)
       const result = updates ? updateSnapshot : snapshot
       return {
-        id: `${packageName}#xbotA2a/${method}`,
-        service: 'xbotA2a',
-        namespace: 'xbotA2a',
+        id: `${packageName}#dshA2a/${method}`,
+        service: 'dshA2a',
+        namespace: 'dshA2a',
         method,
         invocation: { kind: 'direct' },
         parameters: method === 'installUpdate' ? [{
           name: 'expectedVersion', wire: 'expectedVersion', source: 'json' as const,
           codec: versionCodec, strictCodec: versionCodec,
-        }] : method === 'setUpdateCredential' ? [{
-          name: 'token', wire: 'token', source: 'json' as const,
-          codec: tokenCodec, strictCodec: tokenCodec,
         }] : [],
         ...(method === 'status' || method === 'updateStatus'
           ? { cancellation: { parameter: 'signal' as const } }

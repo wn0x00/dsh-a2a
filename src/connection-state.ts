@@ -1,5 +1,6 @@
 export type ConnectionPhase =
   | 'starting'
+  | 'configuration_required'
   | 'disconnected'
   | 'authorizing'
   | 'connecting'

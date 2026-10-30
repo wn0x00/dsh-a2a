@@ -17,8 +17,8 @@ const snapshot = {
   canConnect: false, canReauthorize: true, canCancelAuthorization: false,
 }
 const updateSnapshot = {
-  phase: 'available', currentVersion: '0.1.10', latestVersion: '0.1.11',
-  checkedAt: 1, error: null, restartReason: null, canInstall: true, hasCredential: true,
+  phase: 'available', currentVersion: '0.2.0', latestVersion: '0.2.1',
+  checkedAt: 1, error: null, restartReason: null, canInstall: true,
 }
 const source = await readFile(new URL('../dist/client.js', import.meta.url), 'utf8')
 
@@ -78,7 +78,7 @@ async function fixture(t, options = {}) {
       },
     })
   } })
-  assert.ok(host.get('xbotA2a'), 'Host controller must have started')
+  assert.ok(host.get('dshA2a'), 'Host controller must have started')
   const gateway = host.get('typertGateway')
   await add(client, TypertRegistry)
   await add(client, { name: 'connection-carrier', apply(ctx) {
@@ -152,7 +152,7 @@ test('published bundle reads its mounted namespace through a real scoped Client 
   }
   assert.deepEqual(f.actions, ['connect', 'reauthorize', 'cancelPendingAuthorization'])
   assert.deepEqual(f.calls.map(({ endpoint }) => endpoint), [
-    'xbotA2a/status', 'xbotA2a/connect', 'xbotA2a/reauthorize', 'xbotA2a/cancelAuthorization',
+    'dshA2a/status', 'dshA2a/connect', 'dshA2a/reauthorize', 'dshA2a/cancelAuthorization',
   ])
   assert.ok(f.calls.every(({ payload }) => Object.keys(payload).join() === 'args'
     && Object.keys(payload.args).length === 0))
@@ -230,7 +230,7 @@ test('unloading and reloading the real bundle removes and recreates its namespac
   assert.equal((await oldConnection.status()).ok, true)
   await f.unload()
   assert.equal(f.registrations.size, 0)
-  assert.equal(f.client.get('remote.xbotA2a'), undefined)
+  assert.equal(f.client.get('remote.dshA2a'), undefined)
   assert.equal(f.client.get('typert').remotes.list().length, 0)
   await assert.rejects(async () => oldConnection.status())
   await f.reload()
@@ -255,7 +255,7 @@ for (const allowNonOwner of [false, true]) {
       updater: () => { accessed += 1; throw new Error('must not be accessed') },
     })
     f.principal({ kind: 'agent', id: 'untrusted' })
-    for (const [method, args] of [['status', []], ['check', []], ['install', ['0.1.11']], ['saveCredential', ['synthetic-token']], ['clearCredential', []]]) {
+    for (const [method, args] of [['status', []], ['check', []], ['install', ['0.2.1']]]) {
       const result = await f.updates()[method](...args)
       assert.equal(result.ok, false)
       assert.equal(result.error.code, allowNonOwner ? 'gateway/bad-request' : 'remote-access/denied')
@@ -278,11 +278,11 @@ test('published update controls use the late Host updater and bind installation 
   }
   assert.deepEqual(await f.updates().status(), { ok: true, value: updateSnapshot })
   assert.equal((await f.updates().check()).ok, true)
-  const installed = await f.updates().install('0.1.11')
+  const installed = await f.updates().install('0.2.1')
   assert.equal(installed.ok, true)
   assert.equal(installed.value.phase, 'restart_required')
-  assert.deepEqual(operations, ['check', ['install', '0.1.11']])
-  assert.deepEqual(f.calls.at(-1).payload, { args: { expectedVersion: '0.1.11' } })
+  assert.deepEqual(operations, ['check', ['install', '0.2.1']])
+  assert.deepEqual(f.calls.at(-1).payload, { args: { expectedVersion: '0.2.1' } })
   for (const version of [undefined, '', 'latest', 'https://evil.example/package.tgz', '0'.repeat(81)]) {
     const refused = await f.updates().install(version)
     assert.equal(refused.ok, false)
@@ -318,17 +318,17 @@ test('update RPC redacts factories, action failures, and undeclared output field
     if (factoryFails) throw new Error('Bearer updater-secret')
     return updater
   } })
-  for (const [method, args] of [['status', []], ['check', []], ['install', ['0.1.11']], ['saveCredential', ['synthetic-token']], ['clearCredential', []]]) {
+  for (const [method, args] of [['status', []], ['check', []], ['install', ['0.2.1']]]) {
     const unavailable = await f.updates()[method](...args)
     assert.equal(unavailable.ok, false)
     assert.equal(unavailable.error.code, 'gateway/service-unavailable')
     assert.doesNotMatch(JSON.stringify(unavailable), /updater-secret|Bearer/)
   }
   factoryFails = false
-  updater = Object.fromEntries(['status', 'check', 'install', 'setCredential', 'clearCredential'].map((name) => [name, () => {
+  updater = Object.fromEntries(['status', 'check', 'install'].map((name) => [name, () => {
     throw new Error('Bearer updater-secret')
   }]))
-  for (const [method, args] of [['status', []], ['check', []], ['install', ['0.1.11']], ['saveCredential', ['synthetic-token']], ['clearCredential', []]]) {
+  for (const [method, args] of [['status', []], ['check', []], ['install', ['0.2.1']]]) {
     const failure = await f.updates()[method](...args)
     assert.equal(failure.ok, false)
     assert.equal(failure.error.code, 'gateway/internal')
@@ -338,32 +338,4 @@ test('update RPC redacts factories, action failures, and undeclared output field
   const malformed = await f.updates().status()
   assert.equal(malformed.ok, false)
   assert.doesNotMatch(JSON.stringify(malformed), /updater-secret/)
-})
-
-
-test('credential RPC validates and trims owner input while returning only public status', async (t) => {
-  const stored = []
-  let hasCredential = false
-  const current = () => ({ ...updateSnapshot, hasCredential })
-  const f = await fixture(t, { updater: () => ({
-    status: current,
-    setCredential: async (token) => { stored.push(token); hasCredential = true; return current() },
-    clearCredential: async () => { hasCredential = false; return current() },
-  }) })
-  const saved = await f.updates().saveCredential('  synthetic-private-pat  ')
-  assert.deepEqual(stored, ['synthetic-private-pat'])
-  assert.equal(saved.ok, true)
-  assert.equal(saved.value.hasCredential, true)
-  assert.doesNotMatch(JSON.stringify(saved), /synthetic-private-pat/)
-  for (const token of [undefined, '', '   ', 'synthetic-private-pat\nembedded', 'synthetic-private-pat token', '秘钥', 's'.repeat(4097)]) {
-    const refused = await f.updates().saveCredential(token)
-    assert.equal(refused.ok, false)
-    assert.match(refused.error.code, /^gateway\/(arguments|input)-invalid$/)
-    assert.doesNotMatch(JSON.stringify(refused), /synthetic-private-pat|秘钥|ssssssss/)
-  }
-  assert.equal(stored.length, 1, 'invalid credentials must not be stored or retried')
-  const cleared = await f.updates().clearCredential()
-  assert.equal(cleared.ok, true)
-  assert.equal(cleared.value.hasCredential, false)
-  assert.deepEqual(f.calls.at(-1).payload, { args: {} })
 })

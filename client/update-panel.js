@@ -36,9 +36,6 @@ const errors = {
   installation_unknown: phases.outcome_unknown[1],
   storage: '无法保存本机更新记录，请检查本机目录权限与可用空间。',
   update_changed: '可用版本已变化，请重新检查并确认目标版本。',
-  credential_required: '请先配置 Gitea 只读凭据，再检查更新。',
-  credential_invalid:
-    'Gitea 未接受此凭据。请确认令牌具有 read:package 权限，且账号是 xbot 组织成员。',
 }
 const restartReasons = {
   'no-hmr': '当前宿主需要重启才能载入插件变更。',
@@ -80,8 +77,6 @@ export function createUpdatePanel(React, Button) {
     const [uncertain, setUncertain] = React.useState(false)
     const [actionError, setActionError] = React.useState(false)
     const [confirmVersion, setConfirmVersion] = React.useState(null)
-    const [credential, setCredential] = React.useState('')
-    const [credentialError, setCredentialError] = React.useState(false)
     const state = React.useRef(null)
     const currentSnapshot = React.useRef(null)
     const installAttempted = React.useRef(false)
@@ -124,8 +119,6 @@ export function createUpdatePanel(React, Button) {
       setOperation(null)
       setActionError(false)
       setConfirmVersion(null)
-      setCredential('')
-      setCredentialError(false)
       const refresh = () => {
         if (!owner.active) return Promise.resolve()
         if (owner.pending) return owner.pending.promise
@@ -194,8 +187,6 @@ export function createUpdatePanel(React, Button) {
       unknown ||
       processing ||
       !snapshot?.canInstall
-    const credentialBlocked =
-      disabled || readOnly || readError || unknown || processing || !snapshot
     async function run(action, expectedVersion) {
       const owner = state.current
       if (!owner?.active || currentOperation.current || readOnly || disabled)
@@ -227,36 +218,6 @@ export function createUpdatePanel(React, Button) {
           if (action === 'install') setUncertain(true)
           else setActionError(true)
         }
-      } finally {
-        if (owner.active) {
-          currentOperation.current = null
-          setOperation(null)
-          await refresh()
-        }
-      }
-    }
-    async function changeCredential(remove = false) {
-      const owner = state.current
-      if (!owner?.active || currentOperation.current || credentialBlocked)
-        return
-      const token = credential.trim()
-      if (!remove && !token) return
-      // Tokens are write-only: remove the input as soon as a request is sent,
-      // including requests that later fail. The host preserves a prior token.
-      setCredential('')
-      currentOperation.current = remove ? 'credential-clear' : 'credential-save'
-      setOperation(currentOperation.current)
-      setCredentialError(false)
-      setConfirmVersion(null)
-      owner.invalidate()
-      try {
-        const result = remove
-          ? await updates.clearCredential()
-          : await updates.saveCredential(token)
-        if (!result?.ok) throw new Error('Credential request unavailable')
-        if (owner.active) receive(result.value)
-      } catch {
-        if (owner.active) setCredentialError(true)
       } finally {
         if (owner.active) {
           currentOperation.current = null
@@ -478,119 +439,9 @@ export function createUpdatePanel(React, Button) {
           )
         : null,
       h(
-        'details',
-        {
-          style: {
-            borderTop: '1px solid var(--dsw-alias-border-l3)',
-            paddingTop: 10,
-          },
-        },
-        h(
-          'summary',
-          { style: { cursor: 'pointer', fontSize: 13 } },
-          '更新源授权',
-          snapshot && !readError
-            ? snapshot.hasCredential
-              ? ' · 已配置凭据'
-              : ' · 未配置凭据'
-            : '',
-        ),
-        h(
-          'div',
-          { style: { display: 'grid', gap: 8, paddingTop: 10 } },
-          h(
-            'p',
-            { style: muted },
-            '更新源：Gitea · xbot / deepseek-harness-a2a。请使用仅含 read:package 权限的令牌，账号需是 xbot 组织成员。',
-          ),
-          h(
-            'a',
-            {
-              href: 'https://gitea.guanzhu.me/user/settings/applications',
-              target: '_blank',
-              rel: 'noopener noreferrer',
-              style: { fontSize: 12 },
-            },
-            '在 Gitea 创建只读令牌',
-          ),
-          h(
-            'a',
-            {
-              href: 'https://gitea.guanzhu.me/xbot/-/packages?q=deepseek-harness-a2a',
-              target: '_blank',
-              rel: 'noopener noreferrer',
-              style: { fontSize: 12 },
-            },
-            '查看 Gitea 发布包',
-          ),
-          h(
-            'label',
-            { style: { display: 'grid', gap: 6, fontSize: 12 } },
-            'Gitea 只读令牌',
-            h('input', {
-              type: 'password',
-              name: 'gitea-package-token',
-              value: credential,
-              autoComplete: 'off',
-              spellCheck: false,
-              maxLength: 4096,
-              disabled: credentialBlocked,
-              placeholder: snapshot?.hasCredential
-                ? '输入新令牌以替换已保存凭据'
-                : '粘贴只读令牌',
-              onChange: (event) => setCredential(event.target.value),
-              style: {
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: '8px 10px',
-                borderRadius: 6,
-                border: '1px solid var(--dsw-alias-border-l3)',
-                background: 'transparent',
-                color: 'inherit',
-              },
-            }),
-          ),
-          h(
-            'p',
-            { style: muted },
-            '凭据仅保存在本机，保存后输入会立即清空，不会回填已保存的令牌。',
-          ),
-          h(
-            'div',
-            { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
-            h(
-              Button,
-              {
-                type: 'button',
-                variant: 'outline',
-                disabled: credentialBlocked || !credential.trim(),
-                onClick: () => changeCredential(),
-              },
-              operation === 'credential-save' ? '正在保存凭据…' : '保存凭据',
-            ),
-            snapshot?.hasCredential
-              ? h(
-                  Button,
-                  {
-                    type: 'button',
-                    variant: 'ghost',
-                    disabled: credentialBlocked,
-                    onClick: () => changeCredential(true),
-                  },
-                  operation === 'credential-clear'
-                    ? '正在移除凭据…'
-                    : '移除凭据',
-                )
-              : null,
-          ),
-          credentialError
-            ? h(
-                'p',
-                { role: 'alert', style: muted },
-                '未能确认凭据变更。请刷新更新状态后重试；输入已清空。',
-              )
-            : null,
-        ),
+        'p',
+        { style: muted },
+        '更新源：npm 官方仓库（@guanzhu.me/dsh-a2a，公开包，无需凭据）。',
       ),
     )
   }

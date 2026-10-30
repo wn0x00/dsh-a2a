@@ -4,7 +4,7 @@ import { createUpdatePanel } from './update-panel.js'
 
 // DSH supplies React, its configuration store and native project/model catalogs.
 window.__ModuleLoader__.load({
-  id: '@xbot/deepseek-harness-a2a',
+  id: '@guanzhu.me/dsh-a2a',
   factory: (require) => {
     const React = require('react')
     const { Button, Input } = require('@deepseek-ai/dsh-client-ui-primitives')
@@ -12,6 +12,7 @@ window.__ModuleLoader__.load({
     const UpdatePanel = createUpdatePanel(React, Button)
     const h = React.createElement
     const fields = [
+      'gatewayUrl',
       'deviceName',
       'deviceDescription',
       'workingDirectory',
@@ -211,6 +212,42 @@ window.__ModuleLoader__.load({
           readOnly: !editable,
           changed,
         }),
+        h(
+          'section',
+          {
+            'aria-label': '平台地址',
+            style: { display: 'grid', gap: 8, padding: '8px 0' },
+          },
+          h('h4', { style: { margin: '0 0 4px', fontSize: 14 } }, '平台地址'),
+          h('label', { htmlFor: `${id}-gateway` }, '平台地址'),
+          h(Input, {
+            id: `${id}-gateway`,
+            'aria-label': '平台地址',
+            value: value.gatewayUrl,
+            maxLength: 500,
+            disabled,
+            placeholder: 'https://platform.example.com',
+            autoComplete: 'off',
+            spellCheck: false,
+            onChange: (event) => update({ gatewayUrl: event.target.value }),
+          }),
+          h(
+            'p',
+            { style: { ...muted, fontSize: 12 } },
+            '平台后端服务的 HTTPS 源站地址，保存后用它完成浏览器授权并连接；本机调试可用 http://127.0.0.1 回环地址。更换地址会切换本机凭据与设备身份，需要在浏览器中重新授权。',
+          ),
+          saved.gatewayUrl
+            ? h(
+                'p',
+                { style: { ...muted, fontSize: 12, overflowWrap: 'anywhere' } },
+                `已保存的平台地址：${saved.gatewayUrl}`,
+              )
+            : h(
+                'p',
+                { style: { ...muted, fontSize: 12, color: '#92702a' } },
+                '尚未配置平台地址，保存后才能连接平台。',
+              ),
+        ),
         h(
           'section',
           {
@@ -538,22 +575,19 @@ window.__ModuleLoader__.load({
       'remote.permissionPresets',
     ]
     const installSettings = (ctx) => {
-      const configForm = ctx.configForms.get('xbot-a2a')
+      const configForm = ctx.configForms.get('dsh-a2a')
       const actions = {
         connection: {
-          status: ({ signal } = {}) => ctx.remote.xbotA2a.status(signal),
-          connect: () => ctx.remote.xbotA2a.connect(),
-          reauthorize: () => ctx.remote.xbotA2a.reauthorize(),
-          cancelAuthorization: () => ctx.remote.xbotA2a.cancelAuthorization(),
+          status: ({ signal } = {}) => ctx.remote.dshA2a.status(signal),
+          connect: () => ctx.remote.dshA2a.connect(),
+          reauthorize: () => ctx.remote.dshA2a.reauthorize(),
+          cancelAuthorization: () => ctx.remote.dshA2a.cancelAuthorization(),
           subscribe: (refresh) => ctx.on('connection/reset', refresh),
         },
         updates: {
-          status: ({ signal } = {}) => ctx.remote.xbotA2a.updateStatus(signal),
-          check: () => ctx.remote.xbotA2a.checkUpdate(),
-          install: (version) => ctx.remote.xbotA2a.installUpdate(version),
-          saveCredential: (token) =>
-            ctx.remote.xbotA2a.setUpdateCredential(token),
-          clearCredential: () => ctx.remote.xbotA2a.clearUpdateCredential(),
+          status: ({ signal } = {}) => ctx.remote.dshA2a.updateStatus(signal),
+          check: () => ctx.remote.dshA2a.checkUpdate(),
+          install: (version) => ctx.remote.dshA2a.installUpdate(version),
           subscribe: (refresh) => ctx.on('connection/reset', refresh),
         },
         form: {
@@ -611,7 +645,7 @@ window.__ModuleLoader__.load({
           ctx.slots.register(
             {
               name: 'plugins.bundle.config',
-              key: '@xbot/deepseek-harness-a2a',
+              key: '@guanzhu.me/dsh-a2a',
               inject: () => actions,
             },
             ConfigurationPage,
@@ -621,7 +655,7 @@ window.__ModuleLoader__.load({
           ctx.slots.register(
             {
               name: 'settings.section',
-              id: 'xbot-a2a',
+              id: 'dsh-a2a',
               label: 'Xbot 平台任务',
               order: 80,
               inject: () => actions,
@@ -640,7 +674,7 @@ window.__ModuleLoader__.load({
       // permission to read it. Inject only after mounting to avoid waiting
       // for a service that this plugin itself must provide.
       const settings = ctx.inject(
-        [...inject, 'remote.xbotA2a'],
+        [...inject, 'remote.dshA2a'],
         installSettings,
       )
       await settings

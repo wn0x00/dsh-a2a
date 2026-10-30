@@ -4,9 +4,9 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createPlatformBridgeConfig } from '../dist/platform.js'
+import { configuredGatewayUrl, createPlatformBridgeConfig, normalizePlatformOrigin, PlatformNotConfiguredError, platformStorageDirectory, updateStorageDirectory } from '../dist/platform.js'
 import { MemoryTokenStore, OAuthClient, OAuthLoginRequiredError } from '../dist/pkce.js'
-import { PersistentTokenStore, lockProfile, persistentDeviceId, profileStorageDirectory } from '../dist/token-store.js'
+import { PersistentTokenStore, lockProfile, persistentDeviceId, persistedPlatformUrl, persistPlatformUrl, profileStorageDirectory } from '../dist/token-store.js'
 import { createBridge } from '../dist/plugin.js'
 import { startOAuthCallbackServer } from '../dist/oauth-callback.js'
 
@@ -31,7 +31,7 @@ async function temp(t) {
   return directory
 }
 
-test('platform defaults ignore legacy issuer/device and persist identity per profile', async (t) => {
+test('platform profiles ignore legacy issuer/device and persist identity per profile', async (t) => {
   const root = await temp(t)
   const saved = { A2A_OIDC_ISSUER_URL: process.env.A2A_OIDC_ISSUER_URL, A2A_DEVICE_ID: process.env.A2A_DEVICE_ID }
   process.env.A2A_OIDC_ISSUER_URL = 'http://127.0.0.1:8081/realms/xbot'
@@ -39,21 +39,61 @@ test('platform defaults ignore legacy issuer/device and persist identity per pro
   t.after(() => { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value } })
   const calls = []
   const fetchImpl = async (url) => { calls.push(url); return Response.json(metadata) }
-  const first = await createPlatformBridgeConfig({ storageDirectory: root, profile: 'one' }, () => {}, undefined, fetchImpl)
+  const first = await createPlatformBridgeConfig({ gatewayUrl: 'http://127.0.0.1:8000', storageDirectory: root, profile: 'one' }, () => {}, undefined, fetchImpl)
   assert.deepEqual(calls, ['http://127.0.0.1:8000/api/a2a/oauth/metadata'])
   assert.match(first.config.device.id, /^xbot-[a-f0-9-]{36}$/u)
   assert.deepEqual(first.config.oauth.scopes, ['device.connect', 'device.task.receive', 'device.task.report'])
   const id = first.config.device.id
   await first.config.oauth.tokenStore.set({ accessToken: 'persisted', expiresAt: Date.now() + 100000 })
   await first.release()
-  const next = await createPlatformBridgeConfig({ storageDirectory: root, profile: 'one' }, () => {}, undefined, fetchImpl)
+  const next = await createPlatformBridgeConfig({ gatewayUrl: 'http://127.0.0.1:8000', storageDirectory: root, profile: 'one' }, () => {}, undefined, fetchImpl)
   assert.equal(next.config.device.id, id)
   assert.equal((await next.config.oauth.tokenStore.get()).accessToken, 'persisted')
   await next.release()
-  const other = await createPlatformBridgeConfig({ storageDirectory: root, profile: 'two' }, () => {}, undefined, fetchImpl)
+  const other = await createPlatformBridgeConfig({ gatewayUrl: 'http://127.0.0.1:8000', storageDirectory: root, profile: 'two' }, () => {}, undefined, fetchImpl)
   assert.notEqual(other.config.device.id, id)
   assert.equal(await other.config.oauth.tokenStore.get(), undefined)
   await other.release()
+})
+
+test('no platform address is built in; configuration is required and validated', async (t) => {
+  const root = await temp(t)
+  const saved = process.env.A2A_GATEWAY_URL
+  delete process.env.A2A_GATEWAY_URL
+  t.after(() => { if (saved === undefined) delete process.env.A2A_GATEWAY_URL; else process.env.A2A_GATEWAY_URL = saved })
+  assert.equal(configuredGatewayUrl({}), '')
+  assert.throws(() => platformStorageDirectory({}, undefined), PlatformNotConfiguredError)
+  await assert.rejects(createPlatformBridgeConfig({ storageDirectory: root, profile: 'none' }, () => {}, undefined, async () => { throw new Error('must not fetch') }), PlatformNotConfiguredError)
+  // The environment fallback still configures local runs explicitly.
+  process.env.A2A_GATEWAY_URL = ' http://127.0.0.1:8000 '
+  assert.equal(configuredGatewayUrl({}), 'http://127.0.0.1:8000')
+  const prepared = await createPlatformBridgeConfig({ storageDirectory: root, profile: 'env' }, () => {}, undefined, async () => Response.json(metadata))
+  assert.equal(prepared.config.gatewayUrl, 'http://127.0.0.1:8000')
+  await prepared.release()
+  // A configured value wins over the environment and is normalized to an origin.
+  assert.equal(configuredGatewayUrl({ gatewayUrl: ' https://Platform.Example ' }), 'https://Platform.Example')
+  assert.equal(normalizePlatformOrigin('https://Platform.Example/'), 'https://platform.example')
+  for (const value of ['http://platform.example', 'https://user:pw@platform.example', 'https://platform.example/api', 'https://platform.example?x=1', 'https://platform.example#f', ' https://platform.example ', 'file:///tmp/p']) {
+    assert.throws(() => normalizePlatformOrigin(value), /HTTPS origin/u, value)
+  }
+  assert.equal(normalizePlatformOrigin('http://127.0.0.1:8000'), 'http://127.0.0.1:8000')
+})
+
+test('update storage follows the local profile, not the configured platform', async (t) => {
+  const root = await temp(t)
+  const a = updateStorageDirectory({ storageDirectory: root, profile: 'one' })
+  assert.equal(a, updateStorageDirectory({ gatewayUrl: 'https://one.example', storageDirectory: root, profile: 'one' }))
+  assert.notEqual(a, updateStorageDirectory({ storageDirectory: root, profile: 'two' }))
+  assert.notEqual(a, profileStorageDirectory('https://one.example', 'platform:one', root))
+})
+
+test('the diagnostic platform address persists separately from credentials', async (t) => {
+  const root = await temp(t)
+  assert.equal(await persistedPlatformUrl(root), undefined)
+  await persistPlatformUrl('https://platform.example', root)
+  assert.equal(await persistedPlatformUrl(root), 'https://platform.example')
+  await persistPlatformUrl('https://other.example', root)
+  assert.equal(await persistedPlatformUrl(root), 'https://other.example')
 })
 
 test('storage isolates platforms/profiles and restricts credential file access', async (t) => {
@@ -202,10 +242,10 @@ test('a late 401 for an old access token preserves credentials rotated by anothe
 
 test('platform metadata cannot redirect credential endpoints to a different server', async (t) => {
   const root = await temp(t)
-  await assert.rejects(createPlatformBridgeConfig({ storageDirectory: root, profile: 'metadata' }, () => {}, undefined,
+  await assert.rejects(createPlatformBridgeConfig({ gatewayUrl: 'http://127.0.0.1:8000', storageDirectory: root, profile: 'metadata' }, () => {}, undefined,
     async () => Response.json({ ...metadata, token_endpoint: 'https://other.example/token' })), /configured platform/u)
   // Failed discovery also releases the profile lock so a corrected retry works.
-  const prepared = await createPlatformBridgeConfig({ storageDirectory: root, profile: 'metadata' }, () => {}, undefined,
+  const prepared = await createPlatformBridgeConfig({ gatewayUrl: 'http://127.0.0.1:8000', storageDirectory: root, profile: 'metadata' }, () => {}, undefined,
     async () => Response.json(metadata))
   await prepared.release()
 })

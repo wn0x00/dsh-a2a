@@ -29,7 +29,7 @@ export class ConnectionController extends TypertRemoteService {
     ctx: Context,
     private readonly control: ConnectionControl,
   ) {
-    super(ctx, 'xbotA2a')
+    super(ctx, 'dshA2a')
   }
 
   private requireOwner(): void {
@@ -86,16 +86,6 @@ export class ConnectionController extends TypertRemoteService {
     return this.performUpdate('installUpdate', (updater) => updater.install(expectedVersion))
   }
 
-  @Remote
-  async setUpdateCredential(token: string): Promise<PluginUpdateSnapshot> {
-    return this.performUpdate('setUpdateCredential', (updater) => updater.setCredential(token))
-  }
-
-  @Remote
-  async clearUpdateCredential(): Promise<PluginUpdateSnapshot> {
-    return this.performUpdate('clearUpdateCredential', (updater) => updater.clearCredential())
-  }
-
   private getUpdater(method: string): PluginUpdater {
     try {
       const updater = this.control.updater?.()
@@ -106,7 +96,7 @@ export class ConnectionController extends TypertRemoteService {
     throw new RemoteError(
       'gateway/service-unavailable',
       'Plugin updates are not available in this Host. Try again after startup.',
-      { endpoint: `xbotA2a/${method}` },
+      { endpoint: `dshA2a/${method}` },
     )
   }
 
@@ -119,7 +109,7 @@ export class ConnectionController extends TypertRemoteService {
   }
 
   private async performUpdate(
-    method: 'checkUpdate' | 'installUpdate' | 'setUpdateCredential' | 'clearUpdateCredential',
+    method: 'checkUpdate' | 'installUpdate',
     action: (updater: PluginUpdater) => Promise<PluginUpdateSnapshot>,
   ): Promise<PluginUpdateSnapshot> {
     this.requireOwner()

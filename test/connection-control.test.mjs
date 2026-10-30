@@ -7,8 +7,8 @@ import { ConnectionController } from '../dist/connection-control.js'
 import { connectionContribution } from '../dist/connection-contract.js'
 
 const updateSnapshot = {
-  phase: 'available', currentVersion: '0.1.10', latestVersion: '0.1.11',
-  checkedAt: 1, error: null, restartReason: null, canInstall: true, hasCredential: true,
+  phase: 'available', currentVersion: '0.2.0', latestVersion: '0.2.1',
+  checkedAt: 1, error: null, restartReason: null, canInstall: true,
 }
 
 const snapshot = {
@@ -40,7 +40,7 @@ test('the real Cordis service derives the caller from its invocation, never meth
   t.after(() => fork.dispose())
   const owner = ctx
     .extend({ invocation: { peer: { principal: { kind: 'owner' } } } })
-    .get('xbotA2a')
+    .get('dshA2a')
   assert.deepEqual(owner.status(), snapshot)
   await owner.connect()
   await owner.reauthorize()
@@ -54,10 +54,10 @@ test('the real Cordis service derives the caller from its invocation, never meth
     undefined,
     { peer: { principal: { kind: 'agent', id: 'untrusted' } } },
   ]) {
-    const service = ctx.extend({ invocation }).get('xbotA2a')
+    const service = ctx.extend({ invocation }).get('dshA2a')
     assert.throws(() => service.status(), /local Host owner/)
     assert.throws(() => service.updateStatus(), /local Host owner/)
-    for (const method of ['connect', 'reauthorize', 'cancelAuthorization', 'checkUpdate', 'installUpdate', 'setUpdateCredential', 'clearUpdateCredential']) {
+    for (const method of ['connect', 'reauthorize', 'cancelAuthorization', 'checkUpdate', 'installUpdate']) {
       await assert.rejects(
         service[method]({ principal: { kind: 'owner' } }),
         /local Host owner/,
@@ -65,15 +65,13 @@ test('the real Cordis service derives the caller from its invocation, never meth
     }
   }
   assert.equal(actions.length, 3)
-  const methods = remoteMethods(ctx.get('xbotA2a'))
+  const methods = remoteMethods(ctx.get('dshA2a'))
   assert.deepEqual(methods.map((entry) => entry.method).sort(), [
     'cancelAuthorization',
     'checkUpdate',
-    'clearUpdateCredential',
     'connect',
     'installUpdate',
     'reauthorize',
-    'setUpdateCredential',
     'status',
     'updateStatus',
   ])
@@ -92,7 +90,7 @@ test('RPC failures redact arbitrary upstream errors and strict results reject se
   t.after(() => fork.dispose())
   const service = ctx
     .extend({ invocation: { peer: { principal: { kind: 'owner' } } } })
-    .get('xbotA2a')
+    .get('dshA2a')
   await assert.rejects(service.connect(), (error) => {
     assert.equal(error.code, 'gateway/bad-request')
     assert.doesNotMatch(error.message, /private-token|Bearer/)
@@ -102,8 +100,7 @@ test('RPC failures redact arbitrary upstream errors and strict results reject se
   for (const descriptor of contract.descriptors) {
     assert.equal(descriptor.result.mode, 'strict')
     assert.deepEqual(descriptor.parameters.map((parameter) => parameter.wire),
-      descriptor.method === 'installUpdate' ? ['expectedVersion']
-        : descriptor.method === 'setUpdateCredential' ? ['token'] : [])
+      descriptor.method === 'installUpdate' ? ['expectedVersion'] : [])
     const expected = descriptor.result.typeSymbol.endsWith('#PluginUpdateSnapshot') ? updateSnapshot : snapshot
     assert.deepEqual(descriptor.result.create().parse(expected), expected)
     assert.deepEqual(descriptor.result.encode(expected), expected)
@@ -115,7 +112,7 @@ test('RPC failures redact arbitrary upstream errors and strict results reject se
       ['status', 'updateStatus'].includes(descriptor.method) ? 'signal' : undefined)
   }
   await fork.dispose()
-  assert.equal(ctx.get('xbotA2a'), undefined)
+  assert.equal(ctx.get('dshA2a'), undefined)
 })
 
 
@@ -130,27 +127,26 @@ test('updater is resolved after startup and all failures have bounded public dia
     })
   })
   t.after(() => fork.dispose())
-  const owner = ctx.extend({ invocation: { peer: { principal: { kind: 'owner' } } } }).get('xbotA2a')
+  const owner = ctx.extend({ invocation: { peer: { principal: { kind: 'owner' } } } }).get('dshA2a')
   assert.throws(() => owner.updateStatus(), (error) => error.code === 'gateway/service-unavailable')
-  for (const method of ['checkUpdate', 'installUpdate', 'setUpdateCredential', 'clearUpdateCredential']) {
+  for (const method of ['checkUpdate', 'installUpdate']) {
     await assert.rejects(owner[method](), (error) => error.code === 'gateway/service-unavailable')
   }
   updater = {
     status: () => updateSnapshot,
     check: async () => { operations.push('check'); return updateSnapshot },
     install: async (version) => { operations.push(['install', version]); return updateSnapshot },
-    setCredential: async () => updateSnapshot, clearCredential: async () => updateSnapshot,
   }
   assert.deepEqual(owner.updateStatus(), updateSnapshot)
   assert.deepEqual(await owner.checkUpdate(), updateSnapshot)
-  assert.deepEqual(await owner.installUpdate('0.1.11'), updateSnapshot)
-  assert.deepEqual(operations, ['check', ['install', '0.1.11']])
+  assert.deepEqual(await owner.installUpdate('0.2.1'), updateSnapshot)
+  assert.deepEqual(operations, ['check', ['install', '0.2.1']])
   const aborted = AbortSignal.abort(new Error('aborted read'))
   assert.throws(() => owner.updateStatus(aborted), /aborted read/)
-  for (const name of ['status', 'check', 'install', 'setCredential', 'clearCredential']) {
+  for (const name of ['status', 'check', 'install']) {
     updater[name] = () => { throw new Error('Bearer updater-secret') }
   }
-  for (const method of ['updateStatus', 'checkUpdate', 'installUpdate', 'setUpdateCredential', 'clearUpdateCredential']) {
+  for (const method of ['updateStatus', 'checkUpdate', 'installUpdate']) {
     await assert.rejects(async () => owner[method](), (error) => {
       assert.equal(error.code, 'gateway/internal')
       assert.doesNotMatch(error.message, /Bearer|updater-secret/)
