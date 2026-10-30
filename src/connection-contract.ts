@@ -11,6 +11,7 @@ export function connectionContribution(
       'configuration_required',
       'disconnected',
       'authorizing',
+      'revoking',
       'connecting',
       'connected',
       'reconnecting',
@@ -25,6 +26,8 @@ export function connectionContribution(
       'authorization_timeout',
       'authorization_failed',
       'registration_failed',
+      'authorization_revoked',
+      'revocation_failed',
     ]),
     gatewayUrl: z.string(),
     deviceId: z.string(),
@@ -36,6 +39,8 @@ export function connectionContribution(
     canConnect: z.boolean(),
     canReauthorize: z.boolean(),
     canCancelAuthorization: z.boolean(),
+    authorized: z.boolean().optional(),
+    canRevokeAuthorization: z.boolean().optional(),
   })
   const updateSnapshot = z.strictObject({
     phase: z.enum([
@@ -52,6 +57,15 @@ export function connectionContribution(
     ]).nullable(),
     restartReason: z.string().max(80).nullable(),
     canInstall: z.boolean(),
+    automatic: z.strictObject({
+      enabled: z.boolean(),
+      nextCheckAt: z.number().finite().nonnegative().nullable(),
+      notice: z.strictObject({
+        id: z.string().min(1).max(80),
+        kind: z.enum(['available', 'restart_required', 'updated', 'error']),
+        version: z.string().max(80).nullable(),
+      }).nullable(),
+    }).optional(),
   })
   const packageName = '@guanzhu.me/dsh-a2a'
   const version = z.string().max(80).regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u)
@@ -68,6 +82,7 @@ export function connectionContribution(
       'connect',
       'reauthorize',
       'cancelAuthorization',
+      'revokeAuthorization',
       'updateStatus',
       'checkUpdate',
       'installUpdate',

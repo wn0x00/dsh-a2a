@@ -109,7 +109,7 @@ async function fixture(t, options = {}) {
     button: (label) =>
       view.root
         .findAllByType('button')
-        .find((button) => button.children.join('') === label),
+        .find((button) => (button.props['aria-label'] ?? button.children.join('')) === label),
     publish: async (next) => {
       snapshot = next
       await act(async () => {
@@ -120,7 +120,7 @@ async function fixture(t, options = {}) {
       await act(async () => {
         await view.root
           .findAllByType('button')
-          .find((button) => button.children.join('') === label)
+          .find((button) => (button.props['aria-label'] ?? button.children.join('')) === label)
           .props.onClick()
       })
     },
@@ -159,7 +159,7 @@ test('manual checking and explicit version confirmation precede one exact-versio
   assert.deepEqual(page.calls.install, ['0.2.1'])
   assert.match(page.text(), /更新已安装，等待重启/)
   assert.match(page.text(), /完全退出 DeepSeek Harness/)
-  assert.match(page.text(), /更新包含宿主模块/)
+  assert.match(page.text(), /请完全退出 DeepSeek Harness/)
   assert.equal(page.button('更新到 0.2.1'), undefined)
 })
 

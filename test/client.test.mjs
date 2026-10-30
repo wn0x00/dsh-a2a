@@ -42,6 +42,7 @@ async function renderConfiguration(t, options = {}) {
     ...options.connection,
   }
   let picked = 0
+  let chosenPath = 'C:\\Projects\\new'
   let registered
   const registrations = []
   const remoteListeners = new Set()
@@ -139,6 +140,7 @@ async function renderConfiguration(t, options = {}) {
             'connect',
             'reauthorize',
             'cancelAuthorization',
+            'revokeAuthorization',
             'updateStatus',
             'checkUpdate',
             'installUpdate',
@@ -279,13 +281,13 @@ async function renderConfiguration(t, options = {}) {
         picked += 1
         if (options.pickError) throw new Error('native picker unavailable')
         return options.selection === undefined
-          ? 'C:\\Projects\\new'
+          ? chosenPath
           : options.selection
       },
     },
     slots: {
       inject: (name, register) => {
-        assert.ok(['plugins.bundle.config', 'settings.section'].includes(name))
+        assert.ok(['plugins.bundle.config', 'settings.section', 'shell.overlay'].includes(name))
         return register()
       },
       register: (metadata, component) => {
@@ -341,26 +343,31 @@ async function renderConfiguration(t, options = {}) {
     registrations,
     publish,
     picked: () => picked,
-    input: () => view.root.findByProps({ 'aria-label': '工作区目录' }),
+    input: () => {
+      const select = view.root.findByProps({ 'aria-label': '工作区' })
+      const option = select.findAllByType('option').find(item => item.props.value === select.props.value)
+      return { props: { ...select.props, value: select.props.value === '' ? '' : option.children.join('').split(' · ').at(-1) } }
+    },
     button: (label) =>
       view.root
         .findAllByType('button')
-        .find((button) => button.children.join('') === label),
+        .find((button) => (button.props['aria-label'] ?? button.children.join('')) === label),
     text: () => JSON.stringify(view.toJSON()),
     choose: async () => {
       await act(async () => {
         await view.root
           .findAllByType('button')
-          .find((button) => button.children.join('') === '选择文件夹')
+          .find((button) => button.children.join('') === '选择目录')
           .props.onClick()
       })
     },
     edit: async (value) => {
-      await act(async () => {
-        view.root
-          .findByProps({ 'aria-label': '工作区目录' })
-          .props.onChange({ target: { value } })
-      })
+      if (!value) {
+        await act(async () => view.root.findByProps({ 'aria-label': '工作区' }).props.onChange({ target: { value: '' } }))
+      } else {
+        chosenPath = value
+        await act(async () => view.root.findAllByType('button').find(button => button.children.join('') === '选择目录').props.onClick())
+      }
     },
     select: async (label, value) => {
       await act(async () =>
@@ -380,10 +387,24 @@ async function renderConfiguration(t, options = {}) {
   }
 }
 
+test('automatic updates autosave the boolean preference and survive reopening', async (t) => {
+  const page = await renderConfiguration(t)
+  const toggle = () => page.view.root.findByProps({ 'aria-label': '自动更新' })
+  assert.equal(toggle().props.checked, false)
+  await act(async () => toggle().props.onChange({ target: { checked: true } }))
+  assert.equal(page.writes.length, 0)
+  await act(async () => new Promise(resolve => setTimeout(resolve, 650)))
+  assert.deepEqual(page.writes[0].ops, [{ op: 'set', path: ['automaticUpdates'], value: true }])
+  await page.reopen()
+  assert.equal(toggle().props.checked, true)
+  assert.equal(page.button('保存任务配置'), undefined)
+  assert.ok(page.registrations.some(item => item.metadata.name === 'shell.overlay'))
+})
+
 test('native bundle configuration reads the host value and saves the chosen directory with its revision', async (t) => {
   const page = await renderConfiguration(t)
   assert.equal(page.input().props.value, 'C:\\Projects\\old')
-  assert.equal(page.button('保存任务配置').props.disabled, true)
+  assert.equal(page.button('保存任务配置'), undefined)
   await page.choose()
   assert.equal(page.picked(), 1)
   assert.equal(page.input().props.value, 'C:\\Projects\\new')
@@ -397,8 +418,8 @@ test('native bundle configuration reads the host value and saves the chosen dire
       revision: 3,
     },
   ])
-  assert.match(page.text(), /配置已保存/)
-  assert.equal(page.button('保存任务配置').props.disabled, true)
+  assert.match(page.text(), /已自动保存/)
+  assert.equal(page.button('保存任务配置'), undefined)
 })
 
 test('desktop picker takes precedence over the host picker and cancel preserves the saved directory', async (t) => {
@@ -415,18 +436,19 @@ test('desktop picker takes precedence over the host picker and cancel preserves 
   assert.equal(calls, 1)
   assert.equal(page.picked(), 0)
   assert.equal(page.input().props.value, 'C:\\Projects\\old')
-  assert.equal(page.button('保存任务配置').props.disabled, true)
+  assert.equal(page.button('保存任务配置'), undefined)
   assert.equal(page.writes.length, 0)
 })
 
-test('manual directory entry remains usable when the OS picker is unavailable', async (t) => {
+test('a failed native picker preserves the directory and existing workspaces remain selectable', async (t) => {
   const page = await renderConfiguration(t, { pickError: true })
   await page.choose()
-  assert.match(page.text(), /无法打开文件夹选择器/)
-  await page.edit('C:\\Users\\用户\\工作目录')
+  assert.match(page.text(), /无法打开本地文件夹对话框/)
+  assert.equal(page.writes.length, 0)
+  await page.select('工作区', 'project-a')
   await page.save()
-  assert.equal(page.writes[0].ops[0].value, 'C:\\Users\\用户\\工作目录')
-  assert.match(page.text(), /配置已保存/)
+  assert.equal(page.writes[0].ops[0].value, 'C:\\Projects\\existing')
+  assert.match(page.text(), /已自动保存/)
 })
 
 test('host validation refusal never displays an unsaved path as saved', async (t) => {
@@ -436,7 +458,7 @@ test('host validation refusal never displays an unsaved path as saved', async (t
   assert.match(page.text(), /未能保存/)
   assert.doesNotMatch(page.text(), /任务配置已保存/)
   assert.equal(page.input().props.value, 'C:\\missing')
-  await act(async () => page.button('取消修改').props.onClick())
+  await act(async () => page.button('撤销修改').props.onClick())
   assert.equal(page.input().props.value, 'C:\\Projects\\old')
 })
 
@@ -452,7 +474,7 @@ test('a concurrent host edit is fenced by the revision read when drafting began'
   await page.save()
   assert.equal(page.writes[0].revision, 3)
   assert.match(page.text(), /未能保存/)
-  await act(async () => page.button('取消修改').props.onClick())
+  await act(async () => page.button('撤销修改').props.onClick())
   assert.equal(page.input().props.value, 'C:\\another-editor')
 })
 
@@ -461,7 +483,7 @@ test('connection failure keeps the draft and allows retry', async (t) => {
   await page.choose()
   await page.save()
   assert.match(page.text(), /保存失败，请检查 Harness 连接后重试/)
-  assert.equal(page.button('保存任务配置').props.disabled, false)
+  assert.equal(page.button('重试保存').props.disabled, false)
   assert.equal(page.input().props.value, 'C:\\Projects\\new')
 })
 
@@ -477,9 +499,9 @@ for (const snapshot of [
   test(`configuration cannot write while ${JSON.stringify(snapshot)}`, async (t) => {
     const page = await renderConfiguration(t, { snapshot })
     assert.equal(page.input().props.disabled, true)
-    assert.equal(page.button('选择文件夹').props.disabled, true)
-    assert.equal(page.button('保存任务配置').props.disabled, true)
-    assert.equal(page.button('连接平台').props.disabled, true)
+    assert.equal(page.button('选择目录').props.disabled, true)
+    assert.equal(page.button('保存任务配置'), undefined)
+    assert.equal(page.button('申请授权').props.disabled, true)
     assert.equal(page.button('检查更新').props.disabled, true)
     assert.match(
       page.text(),
@@ -514,7 +536,7 @@ test('settings has a discoverable entry and real project, preset, model and inhe
   assert.equal(page.writes[0].revision, 3)
 })
 
-test('workspace selection, manual directory and native picker share one saved directory', async (t) => {
+test('workspace selection and native picker share one saved directory', async (t) => {
   const page = await renderConfiguration(t)
   assert.doesNotMatch(page.text(), /已有项目/)
   await page.select('工作区', 'project-a')
@@ -570,7 +592,7 @@ test('unavailable catalogs are explained without hiding directory configuration'
 
 test('identity edits save bounded fields and connecting uses the live owner control', async (t) => {
   const page = await renderConfiguration(t)
-  assert.equal(page.button('连接平台').props.disabled, false)
+  assert.equal(page.button('申请授权').props.disabled, false)
   await act(async () => {
     page.view.root
       .findByProps({ 'aria-label': '设备名称' })
@@ -579,14 +601,14 @@ test('identity edits save bounded fields and connecting uses the live owner cont
       .findByProps({ 'aria-label': '设备描述' })
       .props.onChange({ target: { value: 'Local automation' } })
   })
-  assert.equal(page.button('连接平台').props.disabled, true)
+  assert.equal(page.button('申请授权').props.disabled, true)
   await page.save()
   assert.deepEqual(page.writes[0].ops, [
     { op: 'set', path: ['deviceName'], value: 'Office Harness' },
     { op: 'set', path: ['deviceDescription'], value: 'Local automation' },
   ])
   await act(async () => {
-    await page.button('连接平台').props.onClick()
+    await page.button('申请授权').props.onClick()
   })
   assert.equal(page.writes.length, 1)
   assert.deepEqual(page.connectionCalls, ['connect'])
@@ -602,13 +624,13 @@ test('connected status supports confirmed reauthorization and cancellation even 
       lastContactAt: Date.now(),
     },
   })
-  assert.match(page.text(), /已连接/)
-  assert.match(page.text(), /最近联络/)
+  assert.match(page.text(), /重新授权/)
+  assert.match(page.text(), /解除授权/)
   await act(async () => {
     page.button('重新授权').props.onClick()
   })
   assert.equal(page.connectionCalls.length, 0)
-  assert.match(page.text(), /请使用原平台账号/)
+  assert.match(page.text(), /将打开浏览器重新授权/)
   await act(async () => {
     await page.button('打开浏览器授权').props.onClick()
   })
@@ -633,27 +655,27 @@ test('active work prevents reauthorization and connection errors never display a
     canConnect: true,
     activeTasks: 0,
   })
-  assert.match(page.text(), /需要授权/)
+  assert.match(page.text(), /申请授权/)
   assert.doesNotMatch(page.text(), /此设备已授权/)
 })
 
 test('RPC failures show an actionable message without rendering server secrets', async (t) => {
   const page = await renderConfiguration(t, { actionError: true })
   await act(async () => {
-    await page.button('连接平台').props.onClick()
+    await page.button('申请授权').props.onClick()
   })
-  assert.match(page.text(), /未能完成操作/)
+  assert.match(page.text(), /操作未完成/)
   assert.doesNotMatch(page.text(), /Bearer|secret/)
-  assert.equal(page.button('连接平台').props.disabled, false)
+  assert.equal(page.button('申请授权').props.disabled, false)
 })
 
 test('settings close and reopen leaves the plugin RPC contract mounted', async (t) => {
   const page = await renderConfiguration(t)
   await page.reopen()
   assert.equal(page.contractMounted(), true)
-  assert.match(page.text(), /需要授权/)
+  assert.match(page.text(), /申请授权/)
   await act(async () => {
-    await page.button('连接平台').props.onClick()
+    await page.button('申请授权').props.onClick()
   })
   assert.deepEqual(page.connectionCalls, ['connect'])
 })
@@ -661,7 +683,7 @@ test('settings close and reopen leaves the plugin RPC contract mounted', async (
 test('status failure and readonly pending authorization cannot trigger connection actions', async (t) => {
   const page = await renderConfiguration(t, { statusError: true })
   assert.match(page.text(), /无法获取本机连接状态/)
-  assert.equal(page.button('连接平台'), undefined)
+  assert.equal(page.button('申请授权'), undefined)
   assert.equal(page.button('重新授权'), undefined)
   assert.equal(page.button('取消本次授权'), undefined)
   assert.match(page.text(), /完全退出 DeepSeek Harness/)
@@ -701,7 +723,7 @@ async function actualConfigForms() {
     base: {},
     user: {},
     value: { workingDirectory: 'C:\\Projects\\old' },
-    schema: Schema.object({ workingDirectory: Schema.string() }).toJSON(),
+    schema: Schema.object({ workingDirectory: Schema.string(), automaticUpdates: Schema.boolean().default(false) }).toJSON(),
   }
   let writable = true
   const remote = await context.plugin({
@@ -769,10 +791,10 @@ test('actual rc3 ConfigForms snapshots enable the published page without a ficti
   const page = await renderConfiguration(t, { configForm: sdk.form })
   t.after(sdk.dispose)
   assert.equal(page.input().props.disabled, false)
-  assert.equal(page.button('连接平台').props.disabled, false)
+  assert.equal(page.button('申请授权').props.disabled, false)
   assert.equal(page.button('检查更新').props.disabled, false)
   await act(async () => {
-    await page.button('连接平台').props.onClick()
+    await page.button('申请授权').props.onClick()
   })
   assert.deepEqual(page.connectionCalls, ['connect'])
   assert.match(page.text(), /等待浏览器授权/)
@@ -790,4 +812,27 @@ test('actual rc3 ConfigForms snapshots enable the published page without a ficti
   assert.equal(page.button('取消本次授权').props.disabled, true)
   assert.equal(page.button('检查更新').props.disabled, true)
   assert.match(page.text(), /当前连接没有配置写入权限/)
+})
+
+
+test('configuration autosave batches quick edits and keeps failed drafts without an endless retry', async (t) => {
+  const page = await renderConfiguration(t)
+  await page.select('工作区', 'project-a')
+  await page.select('Agent 预设', 'coding')
+  await page.select('模型', JSON.stringify(['deepseek', 'deepseek-chat']))
+  assert.equal(page.writes.length, 0)
+  await act(async () => new Promise(resolve => setTimeout(resolve, 650)))
+  assert.equal(page.writes.length, 1)
+  assert.equal(page.writes[0].ops.length, 4)
+  await page.reopen()
+  assert.equal(page.input().props.value, 'C:\\Projects\\existing')
+  const failed = await renderConfiguration(t, { saveError: true })
+  await failed.choose()
+  await act(async () => new Promise(resolve => setTimeout(resolve, 650)))
+  assert.equal(failed.writes.length, 1)
+  assert.ok(failed.button('重试保存'))
+  await act(async () => new Promise(resolve => setTimeout(resolve, 650)))
+  assert.equal(failed.writes.length, 1)
+  await act(async () => failed.button('撤销修改').props.onClick())
+  assert.equal(failed.input().props.value, 'C:\\Projects\\old')
 })

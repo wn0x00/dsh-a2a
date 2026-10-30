@@ -125,6 +125,32 @@ test('same version and downgrade never enable installation', async t => {
   }
 })
 
+test('automatic release checks ignore preview versions while manual checks retain their existing behavior', async t => {
+  const f = await fixture(t)
+  f.options.fetch = async () => Response.json({ versions: {
+    '0.2.1': { dist: { tarball: tarballFor('0.2.1'), integrity: sha512(f.bytes) } },
+    '0.3.0-rc.1': { dist: { tarball: tarballFor('0.3.0-rc.1'), integrity: sha512(f.bytes) } },
+  } })
+  assert.equal((await f.updater.check(true)).latestVersion, '0.2.1')
+  assert.equal((await f.updater.check()).latestVersion, '0.3.0-rc.1')
+})
+
+test('disabling automatic updates while a verified archive downloads prevents native handoff', async t => {
+  const f = await fixture(t)
+  let enabled = true
+  const original = f.options.fetch
+  f.options.fetch = async (url, init) => {
+    const response = await original(url, init)
+    if (url !== UPDATE_METADATA_URL) enabled = false
+    return response
+  }
+  await f.updater.check(true)
+  const result = await f.updater.install('0.2.1', () => enabled)
+  assert.equal(result.error, 'busy')
+  assert.equal(f.installs.length, 0)
+  assert.equal(f.releaseCount(), 1)
+})
+
 test('an empty registry document means no release is available', async t => {
   const f = await fixture(t, { metadata: { name: UPDATE_PACKAGE, versions: {} } })
   const result = await f.updater.check()

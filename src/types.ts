@@ -231,6 +231,8 @@ export type HarnessConfigString = string | { get: () => string }
  * built-in platform address: the user configures `gatewayUrl` in Settings
  * (persisted by the host) or through the environment. */
 export type HarnessPluginConfig = {
+  /** Explicit opt-in; the Host checks daily and installs only while idle. */
+  automaticUpdates?: boolean | { get: () => boolean }
   /** The volatile value is supplied by native Harness Settings. */
   workingDirectory?: HarnessConfigString
   /** Local Harness tool/prompt composition; empty follows the host default. */

@@ -59,6 +59,23 @@ or perform native Agent execution.
 
 ## Plugin updates
 
+`src/automatic-updates.ts` wraps the native updater with an explicit,
+default-off `automaticUpdates` volatile setting. The Host owns the timer, not
+the settings component. An atomic per-profile `automatic-update.json` records
+the next 24-hour check, deferred version, attempted installation and sanitized
+notice. Startup catches up overdue checks; concurrent ticks share one promise.
+Only stable releases are eligible for automatic installation. The updater
+rechecks the opt-in/lifecycle guard before native handoff, and the existing
+bridge lock fences task admission. Plugin disposal stops scheduling without
+waiting for a native installation that may itself be unloading the plugin.
+
+The shared strict RPC schema exposes the optional automatic status and notice
+alongside the existing update status. `client/update-reminder.js` contributes
+to Harness's additive `shell.overlay` slot and displays its native `Toast`,
+independent of Settings. Session-scoped notice IDs deduplicate reminders;
+failed reads never fabricate update outcomes. The configuration page uses
+native `Tooltip` and `Modal` primitives for hints and confirmations.
+
 `src/plugin-update.ts` reads the public npm registry document for
 `@guanzhu.me/dsh-a2a` using the abbreviated metadata format. It issues only GET
 requests to the registry origin; redirects and tarball URLs on any other origin

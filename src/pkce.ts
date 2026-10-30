@@ -219,6 +219,26 @@ export class OAuthClient {
     return current.sessionScope
   }
 
+  /** Confirm revocation before discarding the credential needed to retry it. */
+  async revokeAuthorization(): Promise<void> {
+    if (this.refreshPromise) await this.refreshPromise.catch(() => undefined)
+    const tokens = await this.store.get()
+    if (tokens) {
+      if (!this.config.revocationEndpoint) throw new Error('The platform does not support authorization revocation')
+      const response = await this.fetchImpl(this.config.revocationEndpoint, {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: this.config.clientId,
+          token: tokens.refreshToken ?? tokens.accessToken,
+          token_type_hint: tokens.refreshToken ? 'refresh_token' : 'access_token' }),
+      })
+      if (!response.ok) throw new Error('Authorization revocation was not confirmed')
+    }
+    this.pending = undefined
+    await this.store.clear()
+    await this.config.authorizationCompleted?.()
+  }
+
   async logout(): Promise<void> {
     const tokens = await this.store.get()
     try {

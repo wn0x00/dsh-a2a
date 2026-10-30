@@ -1,8 +1,10 @@
+import { createConfirmDialog } from './ui-help.js'
+
 const phases = {
   starting: ['正在启动', '正在读取本机连接信息。'],
   configuration_required: [
     '需要配置平台地址',
-    '请先在下方填写平台地址并保存，然后再连接平台。平台地址保存在本机 Harness 配置中。',
+    '填写平台地址并保存，然后连接平台。',
   ],
   disconnected: ['未连接', '连接平台后，可从平台向此设备发送任务。'],
   authorizing: [
@@ -11,7 +13,8 @@ const phases = {
   ],
   connecting: ['正在连接', '正在向平台注册此设备。'],
   updating: ['正在更新插件', '已暂停接收新任务，更新完成后会恢复连接。'],
-  connected: ['已连接', '此设备已授权，可以接收平台任务。'],
+  connected: ['已授权', '此设备已授权，可以接收平台任务。'],
+  revoking: ['正在解除授权', '正在撤销此设备的平台授权。'],
   reconnecting: ['连接中断', '暂时无法联络平台，正在自动重试。'],
   authorization_required: [
     '需要授权',
@@ -24,7 +27,9 @@ const notices = {
   authorization_denied: '本次授权已取消。',
   authorization_timeout: '本次授权已超时，请重新发起。',
   authorization_failed: '本次授权未完成，请检查浏览器或网络后重试。',
-  registration_failed: '设备注册未完成，请重试连接。',
+  registration_failed: '设备注册未完成，请重试授权。',
+  authorization_revoked: '已解除授权。',
+  revocation_failed: '解除授权未完成，原凭据仍保留，请重试或在平台中撤销。',
 }
 
 const STATUS_TIMEOUT_MS = 8000
@@ -78,8 +83,9 @@ function readStatus(connection, controller) {
   })
 }
 
-export function createConnectionPanel(React, Button) {
+export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
   const h = React.createElement
+  const ConfirmDialog = createConfirmDialog(React, Modal)
   const muted = { margin: 0, opacity: 0.72, fontSize: 12, lineHeight: 1.6 }
   return function ConnectionPanel({
     connection,
@@ -87,6 +93,7 @@ export function createConnectionPanel(React, Button) {
     readOnly,
     changed,
     disabledReason,
+    children,
   }) {
     const [snapshot, setSnapshot] = React.useState(null)
     const [failure, setFailure] = React.useState(null)
@@ -222,19 +229,13 @@ export function createConnectionPanel(React, Button) {
       : snapshot
         ? (phases[snapshot.phase] ?? phases.error)
         : ['读取连接状态…', '正在读取本机连接信息。']
-    const connected = !failed && snapshot?.phase === 'connected'
-    const color = connected
-      ? '#27845a'
-      : failed || snapshot?.phase === 'error'
-        ? '#ba5341'
-        : '#92702a'
     const blocked = disabled || busy || failed || !snapshot
     const actionHint =
       disabledReason ??
       (readOnly
         ? '当前连接没有操作权限，请使用可管理本机插件的连接。'
         : changed
-          ? '先保存或取消配置修改，再连接平台或重新授权。'
+          ? '正在自动保存配置，完成后可操作。'
           : busy
             ? '正在处理连接请求，请稍候。'
             : !snapshot?.canConnect &&
@@ -243,218 +244,60 @@ export function createConnectionPanel(React, Button) {
                 )
               ? 'Harness 暂未允许发起连接，请稍后刷新状态。'
               : null)
-    return h(
-      'section',
-      {
-        'aria-label': '平台连接状态',
-        style: {
-          padding: 16,
-          display: 'grid',
-          gap: 12,
-          borderRadius: 10,
-          border: '1px solid var(--dsw-alias-border-l3)',
-          background: 'var(--dsw-alias-bg-layer-1)',
-        },
-      },
-      h(
-        'div',
-        { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-        h('span', {
-          'aria-hidden': true,
-          style: {
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            background: color,
-          },
-        }),
-        h(
-          'strong',
-          { role: 'status', 'aria-live': 'polite', style: { fontSize: 14 } },
-          label,
-        ),
-        !failed && snapshot?.activeTasks > 0
-          ? h(
-              'span',
-              { style: { ...muted, marginLeft: 'auto' } },
-              `${snapshot.activeTasks} 个任务执行中`,
-            )
-          : null,
-      ),
-      h('p', { style: { ...muted, fontSize: 13 } }, description),
-      snapshot && (snapshot.gatewayUrl || snapshot.deviceName)
-        ? h(
-            'div',
-            { style: { display: 'grid', gap: 4, overflowWrap: 'anywhere' } },
-            snapshot.deviceName
-              ? h('span', { style: { fontSize: 13 } }, snapshot.deviceName)
-              : null,
-            snapshot.gatewayUrl
-              ? h('span', { style: muted }, snapshot.gatewayUrl)
-              : null,
-            !failed && snapshot.lastContactAt
-              ? h(
-                  'span',
-                  { style: muted },
-                  `最近联络 ${new Date(snapshot.lastContactAt).toLocaleString()}`,
-                )
-              : null,
-            !failed &&
-              snapshot.phase === 'authorizing' &&
-              snapshot.pendingExpiresAt
-              ? h(
-                  'span',
-                  { style: muted },
-                  `请在 ${new Date(snapshot.pendingExpiresAt).toLocaleTimeString()} 前完成本次授权`,
-                )
-              : null,
-          )
-        : null,
-      failed && snapshot
-        ? h(
-            'p',
-            { style: muted },
-            `上次状态：${phases[snapshot.phase]?.[0] ?? '未知'}（已过期）${readAt ? ` · 最后读取 ${new Date(readAt).toLocaleString()}` : ''}。当前是否在线尚未确认。`,
-          )
-        : null,
-      failed && failure.code
-        ? h(
-            'details',
-            { style: muted },
-            h('summary', { style: { cursor: 'pointer' } }, '诊断信息'),
-            h('code', { style: { overflowWrap: 'anywhere' } }, failure.code),
-          )
-        : null,
-      !failed && notices[snapshot?.notice]
-        ? h(
-            'p',
-            { role: 'status', style: muted },
-            notices[snapshot.notice],
-            connected ? ' 已恢复原有连接。' : '',
-          )
-        : null,
-      h(
-        'div',
-        { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
-        !failed &&
-          snapshot &&
-          !connected &&
-          snapshot.phase !== 'reconnecting' &&
-          snapshot.phase !== 'configuration_required' &&
-          snapshot.phase !== 'updating'
-          ? h(
-              Button,
-              {
-                type: 'button',
-                variant: 'primary',
-                disabled: blocked || !snapshot?.canConnect,
-                onClick: () => act('connect'),
-              },
-              busy ? '正在处理…' : '连接平台',
-            )
-          : null,
-        !failed &&
-          snapshot &&
-          snapshot.phase !== 'authorization_required' &&
-          snapshot.phase !== 'disconnected' &&
-          snapshot.phase !== 'configuration_required' &&
-          snapshot.phase !== 'updating'
-          ? h(
-              Button,
-              {
-                type: 'button',
-                variant: 'outline',
-                disabled: blocked || !snapshot.canReauthorize,
-                onClick: () => setConfirm(true),
-              },
-              '重新授权',
-            )
-          : null,
+    const authorized = !failed && (snapshot?.authorized ??
+      ['connected', 'reconnecting'].includes(snapshot?.phase))
+    const canRevoke = snapshot?.canRevokeAuthorization === true
+    const revoke = confirm === 'revoke'
+    const showProgress = !failed && ['starting', 'connecting', 'authorizing', 'revoking', 'updating'].includes(snapshot?.phase)
+    return h('section', {
+      'aria-label': '平台连接状态',
+      style: { padding: 16, display: 'grid', gap: 10, borderRadius: 10,
+        border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-1)' },
+    },
+      children,
+      showProgress || failed || (!failed && snapshot?.phase === 'error' && snapshot.notice !== 'revocation_failed')
+        ? h('p', { role: failed ? 'alert' : 'status', style: muted },
+          label, '。', description) : null,
+      failed && snapshot ? h('p', { style: muted }, '显示的信息可能已过期，请刷新后再操作。') : null,
+      failed && failure.code ? h('details', { style: muted },
+        h('summary', { style: { cursor: 'pointer' } }, '诊断信息'),
+        h('code', { style: { overflowWrap: 'anywhere' } }, failure.code)) : null,
+      !failed && notices[snapshot?.notice] ? h('p', { role: 'status', style: muted }, notices[snapshot.notice]) : null,
+      h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 } },
+        !failed && snapshot && !['authorizing', 'revoking', 'updating'].includes(snapshot.phase)
+          ? h(Button, { type: 'button', variant: 'primary',
+            disabled: blocked || (authorized ? !snapshot.canReauthorize : !snapshot.canConnect),
+            onClick: () => authorized ? setConfirm('reauthorize') : act('connect'),
+          }, authorized ? '重新授权' : '申请授权') : null,
+        authorized && !['authorizing', 'revoking', 'updating'].includes(snapshot.phase)
+          ? h(Button, { type: 'button', variant: 'ghost', disabled: blocked || !canRevoke,
+            title: !canRevoke ? '有任务运行或平台暂不支持解除授权。' : undefined,
+            onClick: () => setConfirm('revoke'),
+          }, '解除授权') : null,
         !failed && snapshot?.phase === 'authorizing'
-          ? h(
-              Button,
-              {
-                type: 'button',
-                variant: 'outline',
-                disabled:
-                  readOnly ||
-                  busy ||
-                  failed ||
-                  !snapshot.canCancelAuthorization,
-                onClick: () => act('cancelAuthorization'),
-              },
-              '取消本次授权',
-            )
-          : null,
-        h(
-          Button,
-          {
-            type: 'button',
-            variant: 'ghost',
-            disabled: reading || busy,
-            'aria-busy': reading,
-            onClick: refresh,
-          },
-          '刷新状态',
-        ),
+          ? h(Button, { type: 'button', variant: 'outline', disabled: readOnly || busy || !snapshot.canCancelAuthorization,
+            onClick: () => act('cancelAuthorization') }, '取消本次授权') : null,
+        failed || snapshot?.phase === 'error'
+          ? h(Button, { type: 'button', variant: 'ghost', 'aria-label': '刷新状态',
+            disabled: reading || busy, 'aria-busy': reading, onClick: refresh }, '重试') : null,
+        !failed && snapshot?.activeTasks > 0
+          ? h('span', { style: muted }, `${snapshot.activeTasks} 个任务执行中，结束后可更改授权。`) : null,
       ),
-      !failed && actionHint
-        ? h('p', { role: 'status', style: muted }, actionHint)
-        : null,
-      !failed && snapshot?.activeTasks > 0
-        ? h('p', { style: muted }, '任务执行期间不能重新授权，请等待任务结束。')
-        : null,
-      !failed && confirm
-        ? h(
-            'div',
-            {
-              role: 'group',
-              'aria-label': '确认重新授权',
-              style: {
-                borderTop: '1px solid var(--dsw-alias-border-l3)',
-                paddingTop: 12,
-                display: 'grid',
-                gap: 10,
-              },
-            },
-            h('strong', { style: { fontSize: 13 } }, '重新授权此设备'),
-            h(
-              'p',
-              { style: muted },
-              '将暂停接收新任务并打开浏览器。请使用原平台账号；取消或授权失败时会尝试恢复原连接。授权成功后保留设备和任务配置，平台会话需开启新对话。',
-            ),
-            h(
-              'div',
-              { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
-              h(
-                Button,
-                {
-                  type: 'button',
-                  variant: 'primary',
-                  disabled: blocked || !snapshot.canReauthorize,
-                  onClick: () => act('reauthorize'),
-                },
-                '打开浏览器授权',
-              ),
-              h(
-                Button,
-                {
-                  type: 'button',
-                  variant: 'ghost',
-                  onClick: () => setConfirm(false),
-                },
-                '取消',
-              ),
-            ),
-          )
-        : null,
-      actionError
-        ? h(
-            'p',
-            { role: 'alert', style: { ...muted, color: '#ba5341' } },
-            '未能完成操作。请根据当前连接状态重试；浏览器未打开时，请检查系统默认浏览器。',
-          )
-        : null,
+      !failed && actionHint ? h('p', { role: 'status', style: muted }, actionHint) : null,
+      !failed && confirm ? h(ConfirmDialog, {
+        title: revoke ? '解除此设备的授权？' : '重新授权此设备',
+        description: revoke
+          ? '将撤销平台授权并清除本机凭据，此设备将停止接收任务。'
+          : '将打开浏览器重新授权。完成后，请在平台开启新对话。',
+        onClose: () => setConfirm(false),
+      }, h('div', { role: 'group', 'aria-label': revoke ? '确认解除授权' : '确认重新授权',
+        style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+        h(Button, { type: 'button', variant: 'ghost', 'data-modal-autofocus': true, onClick: () => setConfirm(false) }, '取消'),
+        h(Button, { type: 'button', variant: 'primary', disabled: blocked || (revoke ? !canRevoke : !snapshot.canReauthorize),
+          onClick: () => act(revoke ? 'revokeAuthorization' : 'reauthorize') }, revoke ? '确认解除授权' : '打开浏览器授权'),
+      )) : null,
+      actionError && snapshot?.notice !== 'revocation_failed'
+        ? h('p', { role: 'alert', style: { ...muted, color: '#ba5341' } }, '操作未完成，请稍后重试。') : null,
     )
   }
 }

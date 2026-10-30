@@ -54,6 +54,34 @@ internal tools.
 
 ## Updates inside Harness
 
+Enable **自动更新** in **A2A 平台任务 → 插件更新** to opt in; the
+preference saves automatically. The Host checks stable versions every 24 hours even
+when Settings is closed. It persists the next check time per Harness profile;
+an overdue check runs after startup. Harness must remain running to check on
+schedule. It waits for platform tasks and authorization to finish, then uses
+the same verified archive and native installer as manual updates. Turning the
+setting off before native handoff cancels automatic installation; a request
+already accepted by Harness is allowed to finish. Preview versions require a
+manual check.
+
+The main Harness window shows a reminder when an update waits for idle time,
+finishes, needs a restart, or fails. Repeated status reads do not repeat the
+same reminder. No-update checks remain quiet. The plugin never restarts Harness
+automatically or retries an installation whose outcome is unknown. Failed
+checks/installations retry on the next daily check; a busy device is retried
+once per minute. Restart-required or unknown receipts pause automatic work
+until the running version or a manual reconciliation confirms the outcome.
+
+Platform settings share one card with **申请授权**, or **重新授权** and
+**解除授权** for an authorized device. Revocation waits for idle time and only
+clears local credentials after the platform confirms the request; failure keeps
+them for retry. The workspace dropdown and native **选择目录** dialog sit side
+by side in another card with **高级设置** for identity and model overrides.
+Changes save automatically after a short debounce. Revision conflicts or failed
+writes retain the draft and show retry/discard controls.
+Informational hints use hover/focus/click info icons. Reauthorization and manual
+installation use separate confirmation dialogs, keeping the page compact.
+
 Open **A2A 平台任务 → 插件更新** and select **检查更新**. The update source is
 the public npm registry: the plugin reads the `@guanzhu.me/dsh-a2a` registry
 document, selects the highest published strict SemVer version and freezes that

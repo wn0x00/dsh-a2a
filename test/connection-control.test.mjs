@@ -57,7 +57,7 @@ test('the real Cordis service derives the caller from its invocation, never meth
     const service = ctx.extend({ invocation }).get('dshA2a')
     assert.throws(() => service.status(), /local Host owner/)
     assert.throws(() => service.updateStatus(), /local Host owner/)
-    for (const method of ['connect', 'reauthorize', 'cancelAuthorization', 'checkUpdate', 'installUpdate']) {
+    for (const method of ['connect', 'reauthorize', 'cancelAuthorization', 'revokeAuthorization', 'checkUpdate', 'installUpdate']) {
       await assert.rejects(
         service[method]({ principal: { kind: 'owner' } }),
         /local Host owner/,
@@ -72,6 +72,7 @@ test('the real Cordis service derives the caller from its invocation, never meth
     'connect',
     'installUpdate',
     'reauthorize',
+    'revokeAuthorization',
     'status',
     'updateStatus',
   ])

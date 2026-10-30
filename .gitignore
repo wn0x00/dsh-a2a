@@ -1,6 +1,8 @@
 dist/
 node_modules/
 release/
+output/playwright/
+.playwright-cli/
 *.tgz
 .env
 .env.*

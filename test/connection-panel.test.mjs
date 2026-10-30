@@ -59,7 +59,7 @@ test('an old polling request cannot reschedule after its connection effect is re
     pending.resolve({ ok: true, value: snapshot })
   })
   assert.equal(timers.size, 1)
-  assert.match(JSON.stringify(view.toJSON()), /已连接/)
+  assert.match(JSON.stringify(view.toJSON()), /重新授权/)
   await act(async () => {
     view.unmount()
   })
@@ -87,7 +87,7 @@ test('a stale authorization action cannot refresh or overwrite a replacement con
   await act(async () => {
     operation = view.root
       .findAllByType('button')
-      .find((button) => button.children.join('') === '连接平台')
+      .find((button) => button.children.join('') === '申请授权')
       .props.onClick()
   })
   await act(async () => {
@@ -98,7 +98,7 @@ test('a stale authorization action cannot refresh or overwrite a replacement con
     await operation
   })
   assert.equal(oldReads, 1)
-  assert.match(JSON.stringify(view.toJSON()), /已连接/)
+  assert.match(JSON.stringify(view.toJSON()), /重新授权/)
   assert.doesNotMatch(JSON.stringify(view.toJSON()), /等待浏览器授权/)
   await act(async () => {
     view.unmount()
@@ -121,7 +121,7 @@ async function mountPanel(t, source, props = {}) {
     button: (label) =>
       view.root
         .findAllByType('button')
-        .find((button) => button.children.join('') === label),
+        .find((button) => (button.props['aria-label'] ?? button.children.join('')) === label),
   }
 }
 
@@ -175,7 +175,7 @@ for (const [code, hint] of [
       page.text(),
       /private-access-token|Bearer|secret|需要授权/,
     )
-    for (const label of ['连接平台', '重新授权', '取消本次授权'])
+    for (const label of ['申请授权', '重新授权', '取消本次授权'])
       assert.equal(page.button(label), undefined)
     assert.equal(page.button('刷新状态').props.disabled, false)
   })
@@ -197,6 +197,7 @@ test('unrecognized error codes and rejected promises never render arbitrary diag
 })
 
 test('a previously connected snapshot is explicitly stale after failure and recovers after refresh', async (t) => {
+  const clock = fakeTimers(t)
   let broken = false
   const source = connection(async () =>
     broken
@@ -212,21 +213,17 @@ test('a previously connected snapshot is explicitly stale after failure and reco
         },
   )
   const page = await mountPanel(t, source)
-  assert.match(page.text(), /此设备已授权/)
+  assert.match(page.text(), /重新授权/)
   broken = true
-  await act(async () => {
-    await page.button('刷新状态').props.onClick()
-  })
-  assert.match(page.text(), /上次状态：已连接（已过期）/)
-  assert.match(page.text(), /最后读取/)
-  assert.match(page.text(), /当前是否在线尚未确认/)
+  await clock.fire(2000)
+  assert.match(page.text(), /显示的信息可能已过期/)
   assert.doesNotMatch(page.text(), /此设备已授权|最近联络/)
   assert.equal(page.button('重新授权'), undefined)
   broken = false
   await act(async () => {
     await page.button('刷新状态').props.onClick()
   })
-  assert.match(page.text(), /此设备已授权/)
+  assert.match(page.text(), /重新授权/)
   assert.doesNotMatch(page.text(), /已过期|无法获取本机连接状态/)
   assert.equal(page.button('重新授权').props.disabled, false)
 })
@@ -259,10 +256,10 @@ test('manual and automatic refresh coalesce; timeout aborts the RPC and late rep
     },
   }
   const page = await mountPanel(t, source)
-  assert.equal(page.button('刷新状态').props.disabled, true)
+  assert.equal(page.button('刷新状态'), undefined)
   let first, second
   await act(async () => {
-    first = page.button('刷新状态').props.onClick()
+    first = reset()
     second = reset()
   })
   assert.equal(first, second)
@@ -271,7 +268,7 @@ test('manual and automatic refresh coalesce; timeout aborts the RPC and late rep
   await Promise.all([first, second])
   assert.equal(signal.aborted, true)
   assert.match(page.text(), /未及时响应/)
-  assert.equal(page.button('连接平台'), undefined)
+  assert.equal(page.button('申请授权'), undefined)
   assert.equal(page.button('刷新状态').props.disabled, false)
   await act(async () => {
     await page.button('刷新状态').props.onClick()
@@ -283,7 +280,7 @@ test('manual and automatic refresh coalesce; timeout aborts the RPC and late rep
       value: { ...snapshot, deviceName: 'Stale device' },
     })
   })
-  assert.match(page.text(), /Recovered device/)
+  assert.equal(page.button('重新授权').props.disabled, false)
   assert.doesNotMatch(page.text(), /Stale device|未及时响应/)
   assert.deepEqual(clock.delays(), [2000])
 })
@@ -313,8 +310,8 @@ test('repeated failures back off and a successful manual refresh restores the or
     await page.button('刷新状态').props.onClick()
   })
   assert.deepEqual(clock.delays(), [2000])
-  assert.match(page.text(), /需要授权/)
-  assert.equal(page.button('连接平台').props.disabled, false)
+  assert.match(page.text(), /申请授权/)
+  assert.equal(page.button('申请授权').props.disabled, false)
 })
 
 test('unmount cancels an outstanding status read and clears its timeout and poll timer', async (t) => {
@@ -339,7 +336,7 @@ test('unmount cancels an outstanding status read and clears its timeout and poll
   assert.deepEqual(clock.delays(), [])
 })
 
-test('updating pauses connection actions while keeping status refresh available', async (t) => {
+test('updating pauses connection actions while automatic polling continues', async (t) => {
   const page = await mountPanel(
     t,
     connection(async () => ({
@@ -355,10 +352,10 @@ test('updating pauses connection actions while keeping status refresh available'
   )
   assert.match(page.text(), /正在更新插件/)
   assert.match(page.text(), /已暂停接收新任务/)
-  assert.equal(page.button('连接平台'), undefined)
+  assert.equal(page.button('申请授权'), undefined)
   assert.equal(page.button('重新授权'), undefined)
   assert.equal(page.button('取消本次授权'), undefined)
-  assert.ok(page.button('刷新状态'))
+  assert.equal(page.button('刷新状态'), undefined)
 })
 
 for (const [props, message] of [
@@ -371,7 +368,7 @@ for (const [props, message] of [
     },
     /正在读取插件配置/,
   ],
-  [{ disabled: true, changed: true }, /先保存或取消配置修改/],
+  [{ disabled: true, changed: true }, /正在自动保存配置/],
   [
     { disabled: true, disabledReason: '正在保存配置，请等待保存完成。' },
     /正在保存配置/,
@@ -383,7 +380,7 @@ for (const [props, message] of [
       connection(async () => ({ ok: true, value: snapshot })),
       props,
     )
-    assert.equal(page.button('连接平台').props.disabled, true)
+    assert.equal(page.button('申请授权').props.disabled, true)
     assert.match(page.text(), message)
     assert.doesNotMatch(page.text(), /重装|重新安装/)
   })
@@ -397,6 +394,6 @@ test('a host refusal to start authorization is explained without suggesting repe
       value: { ...snapshot, canConnect: false },
     })),
   )
-  assert.equal(page.button('连接平台').props.disabled, true)
+  assert.equal(page.button('申请授权').props.disabled, true)
   assert.match(page.text(), /Harness 暂未允许发起连接，请稍后刷新状态/)
 })
