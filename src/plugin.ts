@@ -89,7 +89,7 @@ export class A2ABridge {
         throw error
       }
       this.phase = 'authorization_required'
-      this.log('info', 'Connect this device from Harness Settings → Xbot platform tasks')
+      this.log('info', 'Connect this device from Harness Settings → A2A platform tasks')
     }
   }
 
@@ -339,7 +339,7 @@ export class A2ABridge {
           this.loopPromise = undefined
           this.stopController = undefined
           this.phase = 'authorization_required'
-          this.log('info', 'Device authorization expired or was revoked; connect again from Harness Settings → Xbot platform tasks')
+          this.log('info', 'Device authorization expired or was revoked; connect again from Harness Settings → A2A platform tasks')
           return
         }
         if (!stopController.signal.aborted) {

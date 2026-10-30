@@ -211,7 +211,7 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
         if (!native) {
           const cwd = await resolveWorkingDirectory(ctx, config)
           runContext.signal.throwIfAborted()
-          const sessionId = `xbot-a2a-${randomUUID()}`
+          const sessionId = `dsh-a2a-${randomUUID()}`
           return execute(await ctx.agents.create({ sessionId, meta: { cwd, agentPreset: preset.id }, agentOptions, setup, signal: runContext.signal }), cwd, sessionId)
         }
         if (!sessions || !runContext.sessionScope || !ctx.get?.('sessionPersistence') || !sessionStore) {
@@ -242,7 +242,7 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
             if (!ctx.agents.resume) throw new Error('当前 Harness 版本不支持恢复会话，请升级 Harness。')
             return execute(await ctx.agents.resume({ resumeSessionId: binding.sessionId, agentOptions, setup, signal: runContext.signal }), cwd, binding.sessionId, workspace)
           }
-          const sessionId = `xbot-a2a-${randomUUID()}`
+          const sessionId = `dsh-a2a-${randomUUID()}`
           return execute(await ctx.agents.create({ sessionId, meta: { cwd, agentPreset: preset.id }, agentOptions, setup, signal: runContext.signal }), cwd, sessionId, workspace, () => save(cwd, sessionId, preset.id))
         })
       },

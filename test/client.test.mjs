@@ -496,7 +496,7 @@ test('settings has a discoverable entry and real project, preset, model and inhe
     page.registrations.find(
       (entry) => entry.metadata.name === 'settings.section',
     ).metadata.label,
-    'Xbot 平台任务',
+    'A2A 平台任务',
   )
   assert.match(page.text(), /工作区写入/)
   assert.match(page.text(), /外部操作需要审批/)

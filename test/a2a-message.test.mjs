@@ -61,7 +61,7 @@ test('native bridge delivers A2A messages without registering or selecting skill
     await bridge.start()
     await done
     assert.deepEqual(registrations[0].allowedSkills, [])
-    assert.ok(registrations[0].capabilities.includes('xbot.a2a.message.v1'))
+    assert.ok(registrations[0].capabilities.includes('dsh.a2a.message.v1'))
     assert.equal(inputs[0].skill, '')
     assert.deepEqual(inputs[0].input, message())
     assert.equal(inputs[0].context.executionMode, 'a2a-message')

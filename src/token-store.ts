@@ -127,18 +127,17 @@ export async function persistPlatformUrl(gatewayUrl: string, root?: string): Pro
   await privateWrite(join(stateStorageBase(root), PLATFORM_FILE), JSON.stringify({ gatewayUrl }))
 }
 
-/** New platform identities deliberately do not reuse the old hostname/Keycloak
- * device id. The random identity survives restarts within this profile. */
+/** Device identities are random and survive restarts within this profile. */
 export async function persistentDeviceId(directory: string): Promise<string> {
   const path = join(directory, 'device.json')
   try {
     const value = JSON.parse(await readFile(path, 'utf8')) as { id: string }
-    if (/^xbot-[a-f0-9-]{36}$/u.test(value.id)) return value.id
+    if (/^dsh-[a-f0-9-]{36}$/u.test(value.id)) return value.id
     throw new Error('Invalid saved device identity')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  const id = `xbot-${randomUUID()}`
+  const id = `dsh-${randomUUID()}`
   await privateWrite(path, JSON.stringify({ id }))
   return id
 }

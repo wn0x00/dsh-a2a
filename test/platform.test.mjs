@@ -17,16 +17,16 @@ const metadata = {
   revocation_endpoint: 'http://127.0.0.1:8000/api/a2a/oauth/revoke',
 }
 const oauthConfig = (store, overrides = {}) => ({
-  clientId: 'xbot-windows', authorizationEndpoint: metadata.authorization_endpoint,
+  clientId: 'dsh-a2a', authorizationEndpoint: metadata.authorization_endpoint,
   authorizationRequestEndpoint: metadata.authorization_request_endpoint,
   tokenEndpoint: metadata.token_endpoint, revocationEndpoint: metadata.revocation_endpoint,
   redirectUri: 'http://127.0.0.1:43127/oauth/callback',
   scopes: ['device.connect', 'device.task.receive', 'device.task.report'],
-  device: { id: 'xbot-test', name: 'My computer', platform: 'linux' },
+  device: { id: 'dsh-test', name: 'My computer', platform: 'linux' },
   tokenStore: store, openAuthorizationUrl() {}, ...overrides,
 })
 async function temp(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'xbot-plugin-'))
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-a2a-plugin-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   return directory
 }
@@ -34,14 +34,14 @@ async function temp(t) {
 test('platform profiles ignore legacy issuer/device and persist identity per profile', async (t) => {
   const root = await temp(t)
   const saved = { A2A_OIDC_ISSUER_URL: process.env.A2A_OIDC_ISSUER_URL, A2A_DEVICE_ID: process.env.A2A_DEVICE_ID }
-  process.env.A2A_OIDC_ISSUER_URL = 'http://127.0.0.1:8081/realms/xbot'
+  process.env.A2A_OIDC_ISSUER_URL = 'http://127.0.0.1:8081/realms/a2a'
   process.env.A2A_DEVICE_ID = 'old-keycloak-device'
   t.after(() => { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value } })
   const calls = []
   const fetchImpl = async (url) => { calls.push(url); return Response.json(metadata) }
   const first = await createPlatformBridgeConfig({ gatewayUrl: 'http://127.0.0.1:8000', storageDirectory: root, profile: 'one' }, () => {}, undefined, fetchImpl)
   assert.deepEqual(calls, ['http://127.0.0.1:8000/api/a2a/oauth/metadata'])
-  assert.match(first.config.device.id, /^xbot-[a-f0-9-]{36}$/u)
+  assert.match(first.config.device.id, /^dsh-[a-f0-9-]{36}$/u)
   assert.deepEqual(first.config.oauth.scopes, ['device.connect', 'device.task.receive', 'device.task.report'])
   const id = first.config.device.id
   await first.config.oauth.tokenStore.set({ accessToken: 'persisted', expiresAt: Date.now() + 100000 })
@@ -133,7 +133,7 @@ test('platform PKCE binds device and callback verifier, rejects wrong state and 
   }), async (url, init) => {
     if (url.endsWith('/requests')) {
       requests.push(JSON.parse(init.body))
-      assert.equal(requests[0].device_id, 'xbot-test')
+      assert.equal(requests[0].device_id, 'dsh-test')
       assert.equal(requests[0].platform, 'linux')
       assert.equal(requests[0].response_type, 'code')
       assert.equal(requests[0].code_challenge_method, 'S256')
@@ -185,7 +185,7 @@ test('logout revokes the grant and removes local credentials', async () => {
   const oauth = new OAuthClient(oauthConfig(store), async (url, init) => {
     assert.equal(url, metadata.revocation_endpoint)
     assert.equal(init.body.get('token'), 'refresh')
-    assert.equal(init.body.get('client_id'), 'xbot-windows')
+    assert.equal(init.body.get('client_id'), 'dsh-a2a')
     assert.equal(init.body.get('token_type_hint'), 'refresh_token')
     return new Response(null, { status: 200 })
   })
@@ -202,10 +202,10 @@ test('revocation and restart stay disconnected until the user explicitly connect
     if (message.includes('expired or was revoked')) resolvePaused()
   } } }, {
     gatewayUrl: 'http://127.0.0.1:8000', transport: 'pull', pollIntervalMs: 250,
-    device: { id: 'xbot-test', name: 'Computer', capabilities: [] },
+    device: { id: 'dsh-test', name: 'Computer', capabilities: [] },
     oauth: oauthConfig(store, { openAuthorizationUrl: () => { opens++ } }),
     fetch: async (url) => {
-      if (String(url).endsWith('/register')) return Response.json({ deviceId: 'xbot-test' })
+      if (String(url).endsWith('/register')) return Response.json({ deviceId: 'dsh-test' })
       if (String(url).endsWith('/requests')) return Response.json({ authorization_url: `${metadata.authorization_endpoint}?request_id=new`, expires_in: 600 })
       polls++
       return Response.json({ detail: 'Unauthorized' }, { status: 401 })

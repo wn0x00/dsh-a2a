@@ -17,7 +17,7 @@ function runContext(id = 'context') {
 }
 
 async function fixture(t, options = {}) {
-  const workspace = await mkdtemp(join(tmpdir(), 'xbot-preset-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-a2a-preset-'))
   t.after(() => rm(workspace, { recursive: true, force: true }))
   const sessionDirectory = join(workspace, 'sessions')
   const stored = new Map()
@@ -204,7 +204,7 @@ test('failed turn diagnostics include current tool and provider facts while keep
     assert.match(error.message, /PROVIDER_ERROR/)
     assert.match(error.message, /HTTP 429/)
     assert.match(error.message, /pwsh \(TOOL_NOT_FOUND\)/)
-    assert.match(error.message, /DSH 会话: xbot-a2a-/)
+    assert.match(error.message, /DSH 会话: dsh-a2a-/)
     assert.doesNotMatch(error.message, /OLD_TOOL|OLD_ERROR|DO_NOT_UPLOAD_COMMAND|sk-secret123|test-secret|oauth-secret|token-secret|sk-anothersecret/)
     return true
   })

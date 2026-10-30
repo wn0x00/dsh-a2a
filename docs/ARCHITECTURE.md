@@ -21,14 +21,14 @@ IIFE. React and Harness UI/catalog services come from the host's module factory;
 the plugin does not ship a second React runtime. `src/workspace-settings.ts`
 validates the host-side workspace and execution configuration.
 
-`src/connection-control.ts` exposes `xbotA2a.status`, `connect`, `reauthorize` and
+`src/connection-control.ts` exposes `dshA2a.status`, `connect`, `reauthorize` and
 `cancelAuthorization`
 through the host's public Typert service API. Each operation requires the local
 host owner's principal. The host registers the strict descriptors from
 `src/connection-contract.ts`; the browser mounts the same contract using the
 host's Zod module. Mounting the contribution does not grant Cordis namespace
 access: the settings page is registered in a child scope that explicitly injects
-`remote.xbotA2a` after `$mount` completes. Loading it in the outer injection list
+`remote.dshA2a` after `$mount` completes. Loading it in the outer injection list
 would wait for the namespace before the plugin can mount it. The child scope is
 disposed before the contract is unmounted. Status reads use Typert transport
 cancellation; signals do not become wire arguments. Strict snapshot codecs

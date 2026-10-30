@@ -29,7 +29,7 @@ export class HarnessSessionIndex {
       let binding: LocalSessionBinding | undefined
       try {
         binding = JSON.parse(await readFile(file, 'utf8')) as LocalSessionBinding
-        if (binding.version !== 1 || !/^xbot-a2a-[a-f0-9-]{36}$/u.test(binding.sessionId) || typeof binding.cwd !== 'string' || !binding.cwd || (binding.agentPreset !== undefined && (typeof binding.agentPreset !== 'string' || !binding.agentPreset))) {
+        if (binding.version !== 1 || !/^dsh-a2a-[a-f0-9-]{36}$/u.test(binding.sessionId) || typeof binding.cwd !== 'string' || !binding.cwd || (binding.agentPreset !== undefined && (typeof binding.agentPreset !== 'string' || !binding.agentPreset))) {
           throw new Error('Invalid session mapping')
         }
       } catch (error) {
@@ -37,7 +37,7 @@ export class HarnessSessionIndex {
       }
       return callback(binding, async (cwd, sessionId, agentPreset) => {
         if (binding) throw new Error('Cannot replace an existing local session binding')
-        if (!/^xbot-a2a-[a-f0-9-]{36}$/u.test(sessionId)) throw new Error('Invalid plugin-owned session id')
+        if (!/^dsh-a2a-[a-f0-9-]{36}$/u.test(sessionId)) throw new Error('Invalid plugin-owned session id')
         await mkdir(this.directory, { recursive: true, mode: 0o700 })
         if (process.platform !== 'win32') await chmod(this.directory, 0o700)
         const temporary = `${file}.${randomUUID()}.tmp`

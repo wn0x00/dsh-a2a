@@ -146,7 +146,7 @@ for (const projectionDisposed of [false, true]) {
                 assert.deepEqual(cause, { kind: 'user' })
                 cancelCalls++
                 if (projectionDisposed) {
-                  throw new Error('agent "xbot-a2a-test" cannot read inbox state: its projection registration is not active')
+                  throw new Error('agent "dsh-a2a-test" cannot read inbox state: its projection registration is not active')
                 }
               },
               async whenIdle() { await idle },

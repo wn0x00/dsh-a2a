@@ -12,7 +12,7 @@ import { lockProfile, profileStorageDirectory } from '../dist/token-store.js'
 import { Config, configuredWorkingDirectory, installWorkspaceSettings, isFullyQualifiedDirectory, resolveWorkingDirectory, validateHostDirectory } from '../dist/workspace-settings.js'
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'xbot-workspace-'))
+  const root = await mkdtemp(join(tmpdir(), 'dsh-a2a-workspace-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const workspace = join(root, 'project')
   const other = join(root, 'other')
@@ -240,7 +240,7 @@ test('standard Message runs only its text in configured cwd and resumes a contro
   assert.equal(workspaces.size, 1)
   const files = await readdir(options.sessionDirectory)
   const saved = JSON.parse(await readFile(join(options.sessionDirectory, files[0]), 'utf8'))
-  assert.match(saved.sessionId, /^xbot-a2a-/)
+  assert.match(saved.sessionId, /^dsh-a2a-/)
   assert.equal(saved.cwd, workspace)
 })
 

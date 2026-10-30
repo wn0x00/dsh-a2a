@@ -33,7 +33,7 @@ staging) or the npm `dist.integrity` (registry) before distributing.
 A failed package build leaves the previous staged release intact. Successful
 staging replaces the manifest and removes only this package's previous archive
 recorded in it; unrelated tarballs are preserved. The output directory is
-generated material, not the canonical source repository. `XBOT_RELEASE_DIR`
+generated material, not the canonical source repository. `DSH_A2A_RELEASE_DIR`
 chooses an output directory; relative values are resolved from the package
 root, not the caller's current directory.
 

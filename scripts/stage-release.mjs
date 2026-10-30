@@ -10,7 +10,7 @@ export function releaseDirectory(packageRoot, override) {
   return resolve(packageRoot, override || 'release')
 }
 
-export function stageRelease({ packageRoot = defaultPackageRoot, outputDir = releaseDirectory(packageRoot, process.env.XBOT_RELEASE_DIR) } = {}) {
+export function stageRelease({ packageRoot = defaultPackageRoot, outputDir = releaseDirectory(packageRoot, process.env.DSH_A2A_RELEASE_DIR) } = {}) {
   mkdirSync(outputDir, { recursive: true })
   const pkg = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'))
   let previousFilename

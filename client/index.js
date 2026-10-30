@@ -189,10 +189,10 @@ window.__ModuleLoader__.load({
         'form',
         {
           onSubmit: save,
-          'aria-label': 'Xbot 平台任务配置',
+          'aria-label': 'A2A 平台任务配置',
           style: { display: 'grid', gap: 12, maxWidth: 680, minWidth: 0 },
         },
-        h('h3', { style: { margin: 0, fontSize: 16 } }, 'Xbot 平台任务'),
+        h('h3', { style: { margin: 0, fontSize: 16 } }, 'A2A 平台任务'),
         h(ConnectionPanel, {
           connection,
           disabled: disabled || changed,
@@ -656,7 +656,7 @@ window.__ModuleLoader__.load({
             {
               name: 'settings.section',
               id: 'dsh-a2a',
-              label: 'Xbot 平台任务',
+              label: 'A2A 平台任务',
               order: 80,
               inject: () => actions,
             },

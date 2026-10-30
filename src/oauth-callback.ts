@@ -12,7 +12,7 @@ const copy = {
     notFound: ['找不到此页面', '此本机地址只用于完成平台授权。'],
     open: '打开 DeepSeek Harness',
     connectedHint: '正在尝试打开桌面应用。如果浏览器没有响应，请点击下方按钮并允许打开应用。',
-    retryHint: '在 Harness「设置 → Xbot 平台任务」中点击「连接平台」重新发起授权。',
+    retryHint: '在 Harness「设置 → A2A 平台任务」中点击「连接平台」重新发起授权。',
     diagnosticHint: '返回诊断终端查看连接状态。需要重试时，重新运行诊断命令。',
     foot: '完成后可以关闭此页面。',
   },
@@ -24,7 +24,7 @@ const copy = {
     notFound: ['Page not found', 'This local address is only used to complete platform authorization.'],
     open: 'Open DeepSeek Harness',
     connectedHint: 'Opening the desktop app. If nothing happens, use the button below and allow your browser to open the app.',
-    retryHint: 'In Harness, open Settings → Xbot platform tasks and select Connect to platform to start a new request.',
+    retryHint: 'In Harness, open Settings → A2A platform tasks and select Connect to platform to start a new request.',
     diagnosticHint: 'Return to the diagnostic terminal to inspect the connection. Run the command again to retry.',
     foot: 'You can close this page when finished.',
   },
@@ -40,7 +40,7 @@ function html(request: IncomingMessage, response: ServerResponse, status: number
   // interpolate callback URLs, codes, states or raw errors into the page.
   const payload = `<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${title} · DeepSeek Harness</title><style nonce="${nonce}">
 *{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#172332;font:15px/1.6 system-ui,-apple-system,sans-serif;display:grid;min-height:100svh;place-items:center;padding:24px}main{width:min(100%,480px);padding:32px;border:1px solid #e3e8ee;border-radius:20px;background:#fff;box-shadow:0 16px 48px #14203308}.brand{font-size:13px;font-weight:600;letter-spacing:.02em;color:#64748b}.icon{display:grid;place-items:center;width:44px;height:44px;margin:24px 0 16px;border-radius:14px;background:${connected ? '#e3f5ef' : '#eef1f5'};color:${connected ? '#147558' : '#64748b'};font-size:23px}h1{margin:0 0 10px;font-size:26px;line-height:1.3}p{margin:0 0 16px;color:#59687a}.hint{font-size:13px}a{display:block;text-align:center;border-radius:10px;padding:11px 16px;background:#275fe5;color:white;font-weight:600;text-decoration:none}a:hover{background:#1d4ec4}a:focus-visible{outline:3px solid #8aafff;outline-offset:4px}footer{margin-top:18px;font-size:12px;color:#64748b}@media(prefers-color-scheme:dark){body{background:#121820;color:#eef2f7}main{background:#1b2532;border-color:#334155}p,.brand,footer{color:#adbacb}.icon{background:#273747;color:#b9d5ef}}@media(max-width:480px){main{padding:24px}body{padding:16px}}
-</style></head><body><main><div class="brand">DeepSeek Harness · Xbot</div><div class="icon" aria-hidden="true">${connected ? '✓' : '↗'}</div><h1>${title}</h1><p>${message}</p><p class="hint">${openDesktop ? connected ? text.connectedHint : text.retryHint : text.diagnosticHint}</p>${openDesktop ? `<a href="dsh://open">${text.open}</a>` : ''}<footer>${text.foot}</footer></main><script nonce="${nonce}">history.replaceState(null,'','/oauth/callback');${connected && openDesktop ? "setTimeout(()=>{window.location.href='dsh://open'},250);" : ''}</script></body></html>`
+</style></head><body><main><div class="brand">DeepSeek Harness · A2A</div><div class="icon" aria-hidden="true">${connected ? '✓' : '↗'}</div><h1>${title}</h1><p>${message}</p><p class="hint">${openDesktop ? connected ? text.connectedHint : text.retryHint : text.diagnosticHint}</p>${openDesktop ? `<a href="dsh://open">${text.open}</a>` : ''}<footer>${text.foot}</footer></main><script nonce="${nonce}">history.replaceState(null,'','/oauth/callback');${connected && openDesktop ? "setTimeout(()=>{window.location.href='dsh://open'},250);" : ''}</script></body></html>`
   response.writeHead(status, {
     'content-type': 'text/html; charset=utf-8',
     'content-length': Buffer.byteLength(payload),

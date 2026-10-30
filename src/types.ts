@@ -32,7 +32,7 @@ export type A2AMessage = {
 }
 
 /** Internal relay negotiation; this is not an A2A protocol capability. */
-export const A2A_MESSAGE_CAPABILITY = 'xbot.a2a.message.v1'
+export const A2A_MESSAGE_CAPABILITY = 'dsh.a2a.message.v1'
 
 export type A2AArtifact = {
   artifactId: string

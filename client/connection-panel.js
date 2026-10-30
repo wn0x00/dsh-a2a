@@ -39,7 +39,7 @@ const statusErrors = {
   'remote-access/denied': 'denied',
   'gateway/internal': 'connection',
   'gateway/cancelled': 'connection',
-  'xbot-ui/status-timeout': 'timeout',
+  'dsh-a2a-ui/status-timeout': 'timeout',
 }
 const statusHints = {
   unavailable:
@@ -123,7 +123,7 @@ export function createConnectionPanel(React, Button) {
         const current = ++generation.current
         const controller = new AbortController()
         const deadline = setTimeout(
-          () => controller.abort({ code: 'xbot-ui/status-timeout' }),
+          () => controller.abort({ code: 'dsh-a2a-ui/status-timeout' }),
           STATUS_TIMEOUT_MS,
         )
         const flight = { controller, promise: null }
