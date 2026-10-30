@@ -19,12 +19,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
           registry-url: https://registry.npmjs.org
 
       - name: Upgrade npm for trusted publishing
         # Trusted publishing requires npm CLI >= 11.5.1.
-        run: npm install -g npm@latest --no-audit --no-fund
+        run: npm install -g npm@11.15.0 --no-audit --no-fund
 
       - name: Verify the release tag matches package.json
         run: |

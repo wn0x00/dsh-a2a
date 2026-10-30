@@ -13,7 +13,7 @@ const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.me
 
 test('release metadata exposes an executable local host runner', () => {
   assert.equal(packageJson.version, manifest.version)
-  assert.equal(packageJson.bin['dsh-a2a'], './dist/cli.js')
+  assert.equal(packageJson.bin['dsh-a2a'], 'dist/cli.js')
   assert.deepEqual(packageJson.files, ['dist', 'manifest.json', 'README.md', 'cordis.patch.yml'])
   assert.equal(manifest.cli, 'dist/cli.js')
   assert.equal(manifest.entry, 'dist/index.js')

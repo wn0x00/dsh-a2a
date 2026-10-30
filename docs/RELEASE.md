@@ -49,11 +49,26 @@ npm credential exists in the repository or its secrets.
 One-time setup, because npm can only attach a trusted publisher to a package
 that already exists:
 
-1. Publish the first version by hand from a maintainer machine logged in with
-   publish rights to the `@guanzhu.me` organization:
+1. Publish the first version from an interactive terminal on a maintainer
+   machine with publish rights to the `@guanzhu.me` organization. First run
+   the build and tests above, then:
    ```sh
-   npm login
-   npm publish --access public
+   npm login --auth-type=web --registry=https://registry.npmjs.org/
+   npm publish --access public --provenance=false --registry=https://registry.npmjs.org/
+   ```
+   Complete the browser authentication with the account's passkey or security
+   key when prompted. Both login and publication can require authentication.
+   Do not pipe or redirect the publish command's input/output: npm skips its
+   interactive browser challenge when stdin or stdout is not a TTY and can
+   fail with `EOTP` even for an authorized maintainer. A successful `npm whoami`
+   confirms identity, not completion of publication's second-factor check.
+
+   The first local publish explicitly disables provenance because provenance
+   must be generated in a supported CI environment. This overrides the package
+   default for this command only; subsequent GitHub Actions releases retain
+   provenance. Confirm registry publication before configuring the publisher:
+   ```sh
+   npm view @guanzhu.me/dsh-a2a version --registry=https://registry.npmjs.org/
    ```
 2. On npmjs.com, open the package settings → **Trusted Publisher** and add the
    GitHub Actions publisher:
@@ -63,13 +78,21 @@ that already exists:
    - Environment name: leave empty (unless a `release` environment is added
      later; then set it in both places)
    - Allowed actions: allow `npm publish`
-3. After that, every release is: bump `package.json` + `manifest.json`
-   versions, merge, create a GitHub Release tagged `v<version>`. The workflow
+   Alternatively, use npm 11.15.0 or later from an interactive terminal:
+   ```sh
+   npm trust github @guanzhu.me/dsh-a2a --repo wn0x00/dsh-a2a --file publish.yml --allow-publish
+   npm trust list @guanzhu.me/dsh-a2a
+   ```
+   Complete the browser's security-key verification if requested. The saved
+   configuration is only validated by a successful publish from that workflow.
+3. After that, every release is: bump `package.json`, the root versions in
+   `package-lock.json`, and `manifest.json`, merge, then create a GitHub Release
+   tagged `v<version>`. The workflow
    refuses tags that do not match `package.json`.
 
 Trusted publishing requires GitHub-hosted runners (self-hosted runners cannot
 mint the OIDC token npm accepts) and npm CLI ≥ 11.5.1; the workflow upgrades
-npm explicitly before publishing.
+npm to a pinned compatible version explicitly before publishing.
 
 ## Continuous integration
 

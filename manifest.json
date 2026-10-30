@@ -3,7 +3,7 @@
   "id": "me.guanzhu.dsh-a2a",
   "name": "DSH A2A Device Bridge",
   "description": "Connect the native Harness Agent to the platform A2A endpoint through an outbound relay.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "entry": "dist/index.js",
   "cli": "dist/cli.js",
   "loader": {
