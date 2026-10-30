@@ -52,7 +52,7 @@
   ],
   "types": "./dist/index.d.ts",
   "bin": {
-    "dsh-a2a": "./dist/cli.js"
+    "dsh-a2a": "dist/cli.js"
   },
   "publishConfig": {
     "access": "public",
