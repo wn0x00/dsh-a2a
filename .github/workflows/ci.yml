@@ -7,7 +7,12 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        sdk: [current, legacy]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -15,5 +20,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Install the supported legacy Host SDK
+        if: matrix.sdk == 'legacy'
+        run: >-
+          npm install --no-save --package-lock=false --no-audit --no-fund
+          '@deepseek-ai/cordis@4.0.5'
+          '@deepseek-ai/dsh-api-gateway@0.2.1-rc.2'
+          '@deepseek-ai/dsh-client-store@0.2.1-rc.3'
+          '@deepseek-ai/dsh-client-ui-settings@0.2.1-rc.3'
+          '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.2'
+          '@deepseek-ai/dsh-typert-registry@0.2.1-rc.2'
+          '@deepseek-ai/schemastery@3.18.5'
       - run: npm test
       - run: npm run pack:release

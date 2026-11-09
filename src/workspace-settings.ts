@@ -73,12 +73,18 @@ export function installWorkspaceSettings(
   ctx: HarnessCordisContext,
   config: HarnessPluginConfig,
 ): void {
-  ctx.on?.('internal/config', function (raw, next) {
+  ctx.on?.('internal/config', function (fiberOrConfig, next) {
     const candidate = next() as Record<string, unknown>
+    // Cordis 4.0 binds the target fiber as `this`; 4.1 passes it as the
+    // first argument with a null receiver. This hook runs for other plugins
+    // during Host startup too, so never dereference an absent receiver or
+    // validate another plugin's configuration.
+    const target = this ?? fiberOrConfig
+    const own = ctx.fiber
     // Cordis supplies a traced fiber proxy to plugins; the config editor
     // dispatches the original fiber. Compare the root-unique runtime uid too.
-    if (this !== ctx.fiber &&
-      (ctx.fiber?.uid === undefined || this.uid !== ctx.fiber.uid))
+    if (!own || !target || typeof target !== 'object' ||
+      (target !== own && (own.uid == null || !('uid' in target) || target.uid !== own.uid)))
       return candidate
     // The platform address persists as a normalized origin; it is never a
     // credential, so the plain string value may stay in the host config.

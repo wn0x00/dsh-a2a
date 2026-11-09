@@ -97,7 +97,12 @@ npm to a pinned compatible version explicitly before publishing.
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs `npm ci`, `npm test` and
-`npm run pack:release` on pushes to `main` and on pull requests. It requires no
+`npm run pack:release` on pushes to `main` and on pull requests. The matrix covers
+Windows and Linux with the pinned DSH `0.2.2-rc.1` SDK (Cordis 4.1) and the legacy
+`0.2.1-rc.2`/`rc.3` SDK (Cordis 4.0). Legacy dependencies are installed without
+changing the lockfile. Configuration regression tests use the real Cordis
+dispatcher to load other Host plugins after this plugin and validate edits;
+mock-only callback tests cannot detect Host event-signature changes. It requires no
 platform database, service containers, deployment secrets or host mounts. It
 verifies a release but does not publish or deploy. Use its status as the merge
 gate.

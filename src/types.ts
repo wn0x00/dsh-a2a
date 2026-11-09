@@ -121,9 +121,9 @@ export type HarnessContext = {
  * npm tests run without installing the whole Harness monorepo. */
 export type HarnessCordisContext = {
   baseUrl?: string
-  fiber?: { uid?: number }
+  fiber?: { uid?: number | null }
   on?: {
-    (name: 'internal/config', handler: (this: { uid?: number }, raw: unknown, next: () => unknown) => unknown): unknown
+    (name: 'internal/config', handler: (this: { uid?: number | null } | null | undefined, fiberOrConfig: unknown, next: () => unknown) => unknown): unknown
     (name: 'loader/volatile-update', handler: () => void): unknown
   }
   get?: {

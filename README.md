@@ -6,6 +6,8 @@
 - **包名**：`@guanzhu.me/dsh-a2a`
 - **源码**：[wn0x00/dsh-a2a](https://github.com/wn0x00/dsh-a2a)
 
+`0.2.3` 修复了 DSH `0.2.2-rc.1` 启动时的 `Cannot read properties of null (reading 'uid')` 崩溃，同时保留旧版 DSH 的配置校验兼容性。使用新版 DSH 时，请将插件更新至 `0.2.3` 或更高版本。
+
 ## 安装
 
 在 Harness 图形客户端中：

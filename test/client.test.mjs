@@ -782,7 +782,7 @@ async function actualConfigForms() {
   }
 }
 
-test('actual rc3 ConfigForms snapshots enable the published page without a fictional mode field', async (t) => {
+test('actual Host ConfigForms snapshots enable the published page without a fictional mode field', async (t) => {
   const sdk = await actualConfigForms()
   const snapshot = sdk.form.getSnapshot()
   assert.equal(snapshot.status, 'ready')
