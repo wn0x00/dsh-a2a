@@ -185,3 +185,64 @@ for (const projectionDisposed of [false, true]) {
     assert.equal(disposed, true)
   })
 }
+
+test('follow-default uses the Host route as a pair even when legacy environment overrides remain', async () => {
+  const oldProvider = process.env.A2A_LLM_PROVIDER, oldModel = process.env.A2A_LLM_MODEL
+  process.env.A2A_LLM_PROVIDER = 'old-deepseek-route'; process.env.A2A_LLM_MODEL = 'old-model'
+  try {
+    let route
+    const reports = []
+    const ctx = withPresets({
+      agentDefaultModel: { currentSelection: () => ({ provider: 'working-provider', model: 'working-model' }) },
+      agents: { async create(options) {
+        route = options.agentOptions
+        return { agent: { options: { ...route }, followup() {}, async whenIdle() {},
+          session: { deriveMessages: () => [] } }, async dispose() {} }
+      } }, effect() {},
+    })
+    const adapter = createNativeHarnessContext(ctx, { provider: '', model: '' })
+    await adapter.agents.run('', 'hello', { taskId: 'task', contextId: 'context', signal: new AbortController().signal,
+      requestApproval: async () => true, reportProgress: async (event) => reports.push(event) })
+    assert.deepEqual(route, { provider: 'working-provider', model: 'working-model' })
+    assert.ok(reports.some((event) => event.provider === 'working-provider' && event.selection_source === 'default'))
+  } finally {
+    if (oldProvider === undefined) delete process.env.A2A_LLM_PROVIDER; else process.env.A2A_LLM_PROVIDER = oldProvider
+    if (oldModel === undefined) delete process.env.A2A_LLM_MODEL; else process.env.A2A_LLM_MODEL = oldModel
+  }
+})
+
+test('an incomplete explicit route cannot mix a configured provider with the default model', async () => {
+  let executed = false
+  const adapter = createNativeHarnessContext({
+    agentDefaultModel: { currentSelection: () => ({ provider: 'host-provider', model: 'host-model' }) },
+    agents: { async create() { executed = true; throw new Error('must not create') } }, effect() {},
+  }, { provider: 'different-provider', model: '' })
+  await assert.rejects(adapter.agents.run('', 'hello', { taskId: 'task', contextId: 'context', signal: new AbortController().signal, requestApproval: async () => true }), /模型配置不完整/)
+  assert.equal(executed, false)
+})
+
+test('native missing credentials emit safe route and tool diagnostics and require authorization', async () => {
+  const reports = [], events = []
+  const ctx = withPresets({
+    agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }) },
+    agents: { async create(options) {
+      return { agent: { options: { ...options.agentOptions }, followup() {
+        events.push({ type: 'turn/start', data: { turn: 2 } },
+          { type: 'tool/call', data: { callId: 'call-one', name: 'read_file', arguments: { password: 'not-logged' } } },
+          { type: 'tool/result', data: { message: { toolCallId: 'call-one', isError: false }, stdout: 'private-content' } },
+          { type: 'turn/end', data: { reason: { kind: 'failed', error: { code: 'MISSING_CREDENTIAL', message: 'Missing provider key; api_key=do-not-send' } } } })
+      }, async whenIdle() {}, session: { snapshotEvents: () => events, deriveMessages: () => [] } }, async dispose() {} }
+    } }, effect() {},
+  })
+  const adapter = createNativeHarnessContext(ctx)
+  await assert.rejects(adapter.agents.run('', 'hello', { taskId: 'task', contextId: 'context', signal: new AbortController().signal,
+    requestApproval: async () => true, reportProgress: async (event) => reports.push(event) }), (error) => {
+      assert.equal(error.name, 'HarnessAuthRequiredError')
+      assert.equal(error.message.includes('do-not-send'), false)
+      return true
+    })
+  assert.ok(reports.some((event) => event.stage === 'tool_started' && event.tool_name === 'read_file'))
+  assert.ok(reports.some((event) => event.stage === 'tool_finished' && event.duration_ms >= 0))
+  assert.ok(reports.some((event) => event.error_code === 'MISSING_CREDENTIAL'))
+  for (const text of ['not-logged', 'private-content', 'do-not-send']) assert.equal(JSON.stringify(reports).includes(text), false)
+})

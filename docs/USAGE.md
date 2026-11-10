@@ -47,7 +47,7 @@ dsh --profile demo
 
 The native adapter inherits the Harness profile's default Agent preset and
 provider/model. Select another configured preset or model in **设置 → A2A 平台任务**.
-For a profile without a default, set `A2A_LLM_PROVIDER` and `A2A_LLM_MODEL`. The native
+For a custom adapter without the Host default-model service, set `A2A_LLM_PROVIDER` and `A2A_LLM_MODEL` together. The native
 plugin runs one Agent entry point; it does not require `allowedSkills`,
 `A2A_ALLOWED_SKILLS`, or tool registration. Harness chooses and manages its own
 internal tools.
@@ -292,3 +292,70 @@ npx dsh-a2a --logout
 The diagnostic runner has its own profile/device and a literal echo handler. Use
 native DSH to validate real model execution. Both use the same platform login
 flow; the diagnostic runner does not replace the Harness plugin loader.
+
+## Long-running tasks and diagnostics (0.2.4)
+
+A local task has **no implicit total execution deadline**. Submitting it still
+returns a receipt immediately; the hosted Agent does not hold a model turn open
+or repeatedly poll until it finishes. If the caller explicitly supplies
+`timeout_seconds`, the accepted range is 1–604800 seconds (seven days). That
+policy covers the local execution promise, including a same-context queue and
+session persistence. Gateway task requests have a separate 15-second
+transport bound. Disconnecting the platform transport does not stop local work;
+explicit cancellation, authorization revocation and local host shutdown still do.
+
+An empty provider/model setting follows the native Harness **global default**
+as a pair. A stale `A2A_LLM_PROVIDER` or `A2A_LLM_MODEL` environment variable no
+longer overrides that UI choice. Explicit settings also form a pair; a partial
+route is rejected instead of mixing different sources. Legacy environment
+configuration is used only by adapters without the Host default-model service.
+Existing native sessions keep their own saved model selection; changing the
+global default does not rewrite a session. Missing local model credentials
+returns `AUTH_REQUIRED`, not an ordinary failed task; configure that same route
+in the host, then continue the interrupted task. The plugin never chooses another
+account or model to conceal a credential error.
+
+Platforms advertise `taskEventsVersion: 1` in device registration to enable the
+new durable reporting protocol. Older platforms continue to receive the existing
+state reports, without unsupported fields; they do not gain the recovery
+properties below until upgraded. The platform and this package must both be
+updated before relying on long-task diagnostics.
+
+For a capable platform, the plugin writes a private task journal beside its
+profile's credential directory, isolated again by the authorization epoch.
+It records task/context/delivery IDs, the local session association, the last
+200 structured diagnostics and unacknowledged events. It does not store the
+request prompt, commands or raw native events. Final text/artifacts are retained
+as the task result; files use user-only permissions. Completed, acknowledged
+records older than 30 days are pruned at startup. An offline outbox keeps all
+state/result events and up to 1000 diagnostics per task; repeated heartbeats
+coalesce to the latest one.
+
+Each report has a stable `event_id`. A result or diagnostic is persisted before
+transmission and retried until the server confirms it, including after a lost
+HTTP acknowledgement or client restart. Reporting uses a separate bounded carrier
+so an offline outbox does not block cancellation checks or new-task pulls. A
+state transition rejected after another actor completed/canceled a task is
+quarantined locally only after querying and confirming that terminal state. The platform deduplicates repeated IDs.
+On startup, the client reads the platform's active-task inventory **only to
+inspect it**, never to execute it again. Previously running local work whose
+executor cannot be reattached is reported interrupted with the saved session ID
+and an explicit unknown-change outcome; a saved session alone does not prove which files changed. An active task with no local record
+is marked diagnostically as unknown, without declaring its outcome or replaying
+it. This is reconciliation, not a promise that arbitrary shell or desktop work
+can be resumed after a process crash.
+
+Progress and 30-second heartbeats identify the client version, executor, phase,
+provider/model, selection source, local session/turn, tool name and observed tool
+duration. Provider/credential errors include a bounded redacted summary. Raw tool
+arguments, stdout, prompts and secrets are never uploaded as diagnostics. Model
+selection sources are `config`, `default`, `env` or `restored`, so a working normal
+session and a failing A2A session can be compared by their actual route. Only
+terminal or input/auth-required results wake the hosted Agent; progress does not
+consume a model turn. Native events are sampled every second, so observed tool
+durations have that resolution.
+
+These guarantees describe this repository's **DSH native adapter**. A separately
+installed Desktop Codex adapter must implement the same reporting/recovery
+contract and advertise its own executor/version. Installing this package cannot
+prove that another adapter was updated or that it supports turn cancellation.

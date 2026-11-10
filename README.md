@@ -55,3 +55,5 @@ npm run pack:release
 - [详细使用说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/USAGE.md)：CLI profile、授权与凭据、会话行为、协议和诊断工具。
 - [架构说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/ARCHITECTURE.md)
 - [发布说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/RELEASE.md)
+
+0.2.4 不再默认限制任务必须在五分钟内完成。升级后的平台可以接收持久化任务回执、执行进度和脱敏诊断，详见[长任务与恢复说明](docs/USAGE.md#long-running-tasks-and-diagnostics-024)。
