@@ -79,6 +79,8 @@ export type HarnessRunContext = {
   contextId: string
   signal: AbortSignal
   requestApproval: (reason: string) => Promise<boolean>
+  /** Bounded structured telemetry; never pass raw events or secrets. */
+  reportProgress?: (event: TaskDiagnostic) => Promise<void>
   executionMode?: 'a2a-message' | 'legacy-skill'
   /** Locally generated authorization epoch; never accepted from task metadata. */
   sessionScope?: string
@@ -323,6 +325,8 @@ export type BridgeConfig = {
   skills?: Record<string, HarnessSkill>
   reconnectDelayMs?: number
   fetch?: typeof globalThis.fetch
+  /** Private profile-scoped state; omitted only by ephemeral/custom hosts. */
+  taskStorageDirectory?: string
 }
 
 export type AgentCard = {
@@ -342,13 +346,35 @@ export type AgentCard = {
 }
 
 export type DeviceRegistration = {
+  taskEventsVersion?: number
   deviceId: string
   connectionToken?: string
   expiresAt?: string
 }
 
+export type TaskDiagnostic = {
+  kind: 'progress' | 'heartbeat' | 'log' | 'error' | 'recovery' | 'result'
+  stage?: string
+  at?: string
+  elapsed_ms?: number
+  client_version?: string
+  executor?: string
+  local_session_id?: string
+  local_turn_id?: string
+  tool_name?: string
+  duration_ms?: number
+  error_code?: string
+  summary?: string
+  changes?: 'unknown' | 'partial' | 'none' | 'saved'
+  provider?: string
+  model?: string
+  selection_source?: 'config' | 'env' | 'default' | 'restored'
+}
+
 export type TaskEvent = {
-  state: A2ATaskState
+  event_id?: string
+  diagnostics?: TaskDiagnostic
+  state?: A2ATaskState
   message?: string
   artifacts?: A2AArtifact[]
 }

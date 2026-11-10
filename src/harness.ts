@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { HarnessAuthRequiredError } from './task-runner.js'
+import { diagnosticText } from './task-diagnostics.js'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -60,15 +62,29 @@ function configuredString(value: HarnessConfigString | undefined): string | unde
   return (typeof value === 'string' ? value : value?.get())?.trim() || undefined
 }
 
-/** Provider failures sometimes echo request credentials. Keep summaries bounded
- * and never send raw tool arguments, stdout, or the complete session log. */
-function diagnosticText(value: string): string {
-  return value
-    .replace(/\b(?:sk-|xa2a_)[A-Za-z0-9_-]+/gu, '[redacted]')
-    .replace(/\bBearer\s+[^\s,;"'}]+/giu, 'Bearer [redacted]')
-    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password)\b(["']?\s*[:=]\s*["']?)[^\s,"';&}]+/giu, '$1$2[redacted]')
-    .replace(/[\r\n\t]+/gu, ' ')
-    .slice(0, 500)
+/** Keep a route's provider and model from the same source. An empty native
+ * setting follows the Host default, never a stale launcher environment override. */
+function modelSelection(ctx: HarnessCordisContext, config: HarnessPluginConfig) {
+  const provider = configuredString(config.provider)
+  const model = configuredString(config.model)
+  if (provider || model) {
+    if (!provider || !model) throw new Error('A2A 模型配置不完整，请同时选择服务商与模型，或清空二者跟随 Harness 默认。')
+    return { provider, model, source: 'config' as const }
+  }
+  if (ctx.agentDefaultModel) {
+    const selected = ctx.agentDefaultModel.currentSelection?.()
+    if ((selected?.provider || selected?.model) && (!selected?.provider || !selected?.model)) {
+      throw new Error('Harness 默认模型配置不完整，请在本地模型设置中同时选择服务商与模型。')
+    }
+    return { ...selected, source: 'default' as const }
+  }
+  const envProvider = process.env.A2A_LLM_PROVIDER?.trim()
+  const envModel = process.env.A2A_LLM_MODEL?.trim()
+  if (envProvider || envModel) {
+    if (!envProvider || !envModel) throw new Error('A2A_LLM_PROVIDER 与 A2A_LLM_MODEL 必须成对配置。')
+    return { provider: envProvider, model: envModel, source: 'env' as const }
+  }
+  return { source: 'default' as const, provider: undefined, model: undefined }
 }
 
 function failedTurn(events: readonly HarnessSessionEvent[], sessionId: string): Error | undefined {
@@ -96,7 +112,7 @@ function failedTurn(events: readonly HarnessSessionEvent[], sessionId: string): 
     parts.push(`工具 ${diagnosticText(call?.data?.name ?? 'unknown')}${detail?.code ? ` (${diagnosticText(detail.code)})` : ''}${detail?.reason ? `: ${diagnosticText(detail.reason)}` : ''}`)
   }
   parts.push(`DSH 会话: ${sessionId}`)
-  return new Error(parts.join('；'))
+  return code === 'MISSING_CREDENTIAL' ? new HarnessAuthRequiredError(parts.join('；')) : new Error(parts.join('；'))
 }
 
 export function createNativeHarnessContext(ctx: HarnessCordisContext, config: HarnessPluginConfig = {}, options: { sessionDirectory?: string } = {}): HarnessContext {
@@ -119,9 +135,11 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
         const native = runContext.executionMode === 'a2a-message'
         const sessionStore = ctx.get?.('sessions')
         const text = native ? messageText(input) : inputText(input)
-        const selected = ctx.agentDefaultModel?.currentSelection?.()
-        const provider = configuredString(config.provider) ?? (process.env.A2A_LLM_PROVIDER?.trim() || undefined) ?? selected?.provider
-        const model = configuredString(config.model) ?? (process.env.A2A_LLM_MODEL?.trim() || undefined) ?? selected?.model
+        const selected = modelSelection(ctx, config)
+        const { provider, model } = selected
+        let selectionSource: 'config' | 'env' | 'default' | 'restored' = selected.source
+        await runContext.reportProgress?.({ kind: 'progress', stage: 'model_selection', executor: 'dsh-native',
+          ...(provider ? { provider } : {}), ...(model ? { model } : {}), selection_source: selectionSource })
         const agentOptions = {
           ...(provider ? { provider } : {}),
           ...(model ? { model } : {}),
@@ -141,6 +159,7 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
           const logged = agent.session.requestHeader?.()
           const restored = pending ?? logged?.config
           if (restored && agent.options) {
+            selectionSource = 'restored'
             agent.options.provider = restored.provider
             agent.options.model = restored.model
             const reasoningEffort = pending
@@ -155,6 +174,8 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
         }
         async function execute(handle: HarnessAgentHandle, cwd: string, sessionId: string, workspace?: HarnessWorkspace, beforeRun?: () => Promise<void>): Promise<HarnessRunResult> {
           let keep = retained.get(sessionId) === handle
+          let observer: ReturnType<typeof setInterval> | undefined
+          let observed = Promise.resolve()
           const abort = () => {
             try {
               handle.agent.cancel?.({ kind: 'user' })
@@ -184,6 +205,45 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
               throw new Error('DSH 会话正在处理其他输入，请等待当前任务完成后重试。')
             }
             const priorEventCount = handle.agent.session.snapshotEvents?.().length ?? 0
+            let cursor = priorEventCount
+            const calls = new Map<string, { name: string; started: number }>()
+            const scan = async () => {
+              if (!runContext.reportProgress || !handle.agent.session.snapshotEvents) return
+              const events = handle.agent.session.snapshotEvents().slice(cursor)
+              cursor += events.length
+              for (const event of events) {
+                const data = event.data
+                const turn = data?.turn === undefined ? {} : { local_turn_id: String(data.turn) }
+                if (event.type === 'tool/call') {
+                  if (data?.callId) calls.set(data.callId, { name: data.name ?? 'unknown', started: Date.now() })
+                  await runContext.reportProgress({ kind: 'progress', stage: 'tool_started', local_session_id: sessionId,
+                    ...turn, tool_name: data?.name ?? 'unknown' })
+                } else if (event.type === 'tool/result') {
+                  const call = calls.get(data?.message?.toolCallId ?? '')
+                  if (data?.message?.toolCallId) calls.delete(data.message.toolCallId)
+                  await runContext.reportProgress({ kind: data?.message?.isError ? 'error' : 'progress',
+                    stage: 'tool_finished', local_session_id: sessionId, ...turn,
+                    ...(call ? { tool_name: call.name, duration_ms: Date.now() - call.started } : {}),
+                    ...(data?.error?.code ? { error_code: data.error.code } : {}),
+                    ...(data?.error?.reason ? { summary: diagnosticText(data.error.reason) } : {}) })
+                } else if (event.type === 'turn/start' || event.type === 'turn/end') {
+                  await runContext.reportProgress({ kind: 'progress', stage: event.type === 'turn/start' ? 'running' : 'turn_finished',
+                    local_session_id: sessionId, ...turn,
+                    ...(data?.reason?.error?.code ? { error_code: data.reason.error.code } : {}),
+                    ...(data?.reason?.error?.message ? { summary: diagnosticText(data.reason.error.message) } : {}) })
+                }
+              }
+            }
+            const actualProvider = handle.agent.options?.provider ?? provider
+            const actualModel = handle.agent.options?.model ?? model
+            await runContext.reportProgress?.({ kind: 'progress', stage: 'running', local_session_id: sessionId,
+              executor: 'dsh-native', selection_source: selectionSource,
+              ...(actualProvider ? { provider: actualProvider } : {}),
+              ...(actualModel ? { model: actualModel } : {}) })
+            if (runContext.reportProgress) {
+              observer = setInterval(() => { observed = observed.then(scan).catch(() => undefined) }, 1000)
+              observer.unref()
+            }
             runContext.signal.addEventListener('abort', abort, { once: true })
             handle.agent.followup({
               id: randomUUID(),
@@ -192,6 +252,9 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
               source: { kind: 'user' },
             })
             await handle.agent.whenIdle()
+            if (observer) clearInterval(observer)
+            await observed
+            await scan()
             runContext.signal.throwIfAborted()
             if (handle.agent.session.snapshotEvents) {
               const error = failedTurn(handle.agent.session.snapshotEvents().slice(priorEventCount), sessionId)
@@ -199,6 +262,8 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
             }
             return { text: resultText(handle.agent.session.deriveMessages()) }
           } finally {
+            if (observer) clearInterval(observer)
+            await observed
             runContext.signal.removeEventListener('abort', abort)
             // DSH emits api-session/removed when a live handle is disposed.
             // Keep normal native sessions visible and release them only with
@@ -220,6 +285,7 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
         }
         const workspaces = ctx.get?.('workspaceRegistry')
         if (!workspaces) throw new Error('当前 Harness 未提供工作区服务，请启用原生工作区后重试。')
+        await runContext.reportProgress?.({ kind: 'progress', stage: 'waiting_context' })
         return sessions.withContext(runContext.sessionScope, runContext.contextId, runContext.signal, async (binding, save) => {
           const selectedCwd = await resolveWorkingDirectory(ctx, config)
           runContext.signal.throwIfAborted()
@@ -230,6 +296,7 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
             if (binding.cwd !== cwd) throw new Error('工作目录已更改，请在平台开启新对话；旧会话不会切换项目目录。')
             if (!binding.agentPreset) throw new Error('此对话由旧版插件创建，未绑定 Harness Agent 模式，请在平台开启新对话。')
             if (binding.agentPreset !== preset.id) throw new Error('Agent 模式已更改，请在平台开启新对话；旧会话不会切换工具和权限策略。')
+            selectionSource = 'restored'
             const live = retained.get(binding.sessionId)
             const registered = ctx.agents.get?.(binding.sessionId)
             if (live && (!ctx.agents.get || registered === live.agent)) return execute(live, cwd, binding.sessionId, workspace)

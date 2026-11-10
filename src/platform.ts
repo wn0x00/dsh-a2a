@@ -1,4 +1,5 @@
 import { hostname } from 'node:os'
+import { join } from 'node:path'
 
 import { lockProfile, persistentDeviceId, PersistentTokenStore, profileStorageDirectory, stateStorageDirectory } from './token-store.js'
 import type { BridgeConfig, HarnessPluginConfig } from './types.js'
@@ -132,6 +133,7 @@ export async function createPlatformBridgeConfig(
       directory,
       config: {
         gatewayUrl, transport: 'pull', device, allowedSkills, executionMode,
+        taskStorageDirectory: join(directory, 'tasks'),
         pollIntervalMs: config.pollIntervalMs ?? 3000,
         fetch: fetchImpl,
         oauth: {

@@ -12,6 +12,10 @@ import type {
 import { OAuthClient, OAuthLoginRequiredError } from './pkce.js'
 import type { BridgeConfig, DeviceConfig } from './types.js'
 
+export class GatewayRequestError extends Error {
+  constructor(readonly status: number) { super(`Gateway request failed (${status})`) }
+}
+
 type FetchImpl = typeof globalThis.fetch
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -151,7 +155,7 @@ function taskEnvelope(task: A2ATask, delivery?: Record<string, unknown>): A2ATas
     }
     if (policy.timeoutSeconds !== undefined) {
       if (typeof policy.timeoutSeconds !== 'number' || !Number.isFinite(policy.timeoutSeconds)
-        || policy.timeoutSeconds < 1 || policy.timeoutSeconds > 3600) {
+        || policy.timeoutSeconds < 1 || policy.timeoutSeconds > 604800) {
         throw new Error('Invalid relay timeout policy')
       }
       timeouts.push(policy.timeoutSeconds)
@@ -284,6 +288,7 @@ export class GatewayClient {
     if (typeof payload.deviceId !== 'string') throw new Error('Device registration has no deviceId')
     const registration: DeviceRegistration = {
       deviceId: payload.deviceId,
+      ...(typeof payload.taskEventsVersion === 'number' ? { taskEventsVersion: payload.taskEventsVersion } : {}),
       ...(typeof payload.connectionToken === 'string' ? { connectionToken: payload.connectionToken } : {}),
       ...(typeof payload.expiresAt === 'string' ? { expiresAt: payload.expiresAt } : {}),
     }
@@ -334,14 +339,32 @@ export class GatewayClient {
     return asTask(payload.result)
   }
 
+  async activeTasks(): Promise<A2ATask[]> {
+    const tasks: A2ATask[] = []
+    let after = ''
+    do {
+      const query = new URLSearchParams({ limit: '100', ...(after ? { after_id: after } : {}) })
+      const response = await this.request('/a2a/devices/' + encodeURIComponent(this.device.id) + '/tasks/active?' + query, { method: 'GET' })
+      const page = asObject(await response.json())
+      if (!Array.isArray(page.tasks)) throw new Error('Invalid task reconciliation response')
+      for (const item of page.tasks) tasks.push(asTask(asObject(item).task))
+      const next = typeof page.next_after_id === 'string' ? page.next_after_id : ''
+      if (next && next === after) throw new Error('Task reconciliation cursor did not advance')
+      after = next
+    } while (after)
+    return tasks
+  }
+
   async taskEvent(taskId: string, event: TaskEvent): Promise<void> {
     const body: Record<string, unknown> = {
-      state: event.state,
+      ...(event.state ? { state: event.state } : {}),
+      ...(event.event_id ? { event_id: event.event_id } : {}),
+      ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),
       deviceId: this.device.id,
     }
     if (event.message) {
       body.message = {
-        messageId: `${taskId}:${event.state.toLowerCase()}`,
+        messageId: event.event_id ?? `${taskId}:${event.state?.toLowerCase() ?? 'progress'}`,
         role: 'ROLE_AGENT',
         parts: [{ text: event.message, mediaType: 'text/plain' }],
       }
@@ -378,6 +401,10 @@ export class GatewayClient {
     if (connectionToken) headers.set('x-device-connection', connectionToken)
     const response = await this.fetchImpl(new URL(path, this.gatewayUrl), {
       ...init,
+      // Bound transport attempts independently of the task's execution time.
+      ...(headers.get('accept') !== 'text/event-stream' ? {
+        signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+      } : {}),
       headers,
     })
     if (response.status === 401) {
@@ -385,7 +412,7 @@ export class GatewayClient {
       if (rotated && !retried) return this.request(path, init, true)
       throw new OAuthLoginRequiredError()
     }
-    if (!response.ok) throw new Error(`Gateway request failed (${response.status})`)
+    if (!response.ok) throw new GatewayRequestError(response.status)
     return response
   }
 }

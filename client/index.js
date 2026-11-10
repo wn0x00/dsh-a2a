@@ -105,10 +105,11 @@ window.__ModuleLoader__.load({
                 : null
       const value = draft?.value ?? saved
       const changed = fields.some((field) => value[field] !== saved[field])
-      const update = (patch) => {
+      const update = (patch, immediate = false) => {
         setDraft((previous) => ({
           value: { ...(previous?.value ?? saved), ...patch },
           revision: previous?.revision ?? snapshot.revision,
+          immediate,
         }))
         setNotice(null)
       }
@@ -194,6 +195,10 @@ window.__ModuleLoader__.load({
       }
       React.useEffect(() => {
         if (!editable || busy || !changed || !draft || notice?.error) return
+        if (draft.immediate) {
+          void save()
+          return
+        }
         const timer = setTimeout(() => { void save() }, 600)
         return () => clearTimeout(timer)
       }, [draft, editable, busy, changed, snapshot.revision, notice?.error])
@@ -400,7 +405,7 @@ window.__ModuleLoader__.load({
                 const [provider, model] = event.target.value
                   ? JSON.parse(event.target.value)
                   : ['', '']
-                update({ provider, model })
+                update({ provider, model }, true)
               },
             },
             h(
@@ -428,6 +433,14 @@ window.__ModuleLoader__.load({
                 ),
               ),
             ),
+          ),
+          h('p', { style: muted, 'aria-label': '新任务模型' },
+            modelSelection
+              ? `新会话使用：${value.provider}/${value.model}（插件指定）`
+              : catalogs.models?.default
+                ? `新会话跟随全局默认：${catalogs.models.default.provider}/${catalogs.models.default.model}`
+                : '尚未读取到 Harness 全局默认模型',
+            '。已有会话保留自己的模型；普通对话中临时切换模型，不会更改全局默认。',
           ),
           catalogs.models?.failures?.length
             ? h(

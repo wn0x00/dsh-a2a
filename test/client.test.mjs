@@ -723,7 +723,7 @@ async function actualConfigForms() {
     base: {},
     user: {},
     value: { workingDirectory: 'C:\\Projects\\old' },
-    schema: Schema.object({ workingDirectory: Schema.string(), automaticUpdates: Schema.boolean().default(false) }).toJSON(),
+    schema: Schema.object({ workingDirectory: Schema.string(), automaticUpdates: Schema.boolean().default(false), provider: Schema.string().default(''), model: Schema.string().default('') }).toJSON(),
   }
   let writable = true
   const remote = await context.plugin({
@@ -820,8 +820,7 @@ test('configuration autosave batches quick edits and keeps failed drafts without
   await page.select('工作区', 'project-a')
   await page.select('Agent 预设', 'coding')
   await page.select('模型', JSON.stringify(['deepseek', 'deepseek-chat']))
-  assert.equal(page.writes.length, 0)
-  await act(async () => new Promise(resolve => setTimeout(resolve, 650)))
+  // A model selection immediately commits the complete draft, including earlier text edits.
   assert.equal(page.writes.length, 1)
   assert.equal(page.writes[0].ops.length, 4)
   await page.reopen()
@@ -835,4 +834,34 @@ test('configuration autosave batches quick edits and keeps failed drafts without
   assert.equal(failed.writes.length, 1)
   await act(async () => failed.button('撤销修改').props.onClick())
   assert.equal(failed.input().props.value, 'C:\\Projects\\old')
+})
+
+test('model choice saves immediately through real ConfigForms and following default survives reopening', async (t) => {
+  const sdk = await actualConfigForms()
+  const page = await renderConfiguration(t, { configForm: sdk.form })
+  t.after(sdk.dispose)
+  await page.select('模型', JSON.stringify(['deepseek', 'deepseek-chat']))
+  assert.equal(sdk.form.getSnapshot().value.provider, 'deepseek')
+  assert.equal(sdk.form.getSnapshot().value.model, 'deepseek-chat')
+  await page.reopen()
+  assert.match(page.text(), /新会话使用：deepseek\/deepseek-chat/)
+  await page.select('模型', '')
+  assert.equal(sdk.form.getSnapshot().value.provider, '')
+  assert.equal(sdk.form.getSnapshot().value.model, '')
+  await page.reopen()
+  assert.equal(page.view.root.findByProps({ 'aria-label': '模型' }).props.value, '')
+  assert.match(page.text(), /新会话跟随全局默认：mimo\/mimo-v2.5-pro/)
+  assert.match(page.text(), /临时切换模型，不会更改全局默认/)
+})
+
+test('failed immediate model save retains selection and reports failure without claiming success', async (t) => {
+  const page = await renderConfiguration(t, { saveError: true })
+  await page.select('模型', JSON.stringify(['deepseek', 'deepseek-chat']))
+  assert.equal(page.writes.length, 1)
+  assert.match(page.text(), /保存失败/)
+  assert.doesNotMatch(page.text(), /已自动保存/)
+  assert.equal(page.view.root.findByProps({ 'aria-label': '模型' }).props.value, JSON.stringify(['deepseek', 'deepseek-chat']))
+  assert.ok(page.button('重试保存'))
+  await act(async () => page.button('撤销修改').props.onClick())
+  assert.equal(page.view.root.findByProps({ 'aria-label': '模型' }).props.value, '')
 })

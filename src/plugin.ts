@@ -73,6 +73,8 @@ export class A2ABridge {
       (level, message, fields) => this.log(level, message, fields),
       nativeMessages ? (message, context) => ctx.agents.run('', message, context) : undefined,
       () => this.oauth.sessionScope(),
+      { ...(config.taskStorageDirectory ? { storageDirectory: config.taskStorageDirectory } : {}),
+        getTask: (taskId) => this.gateway.getTask(taskId), activeTasks: () => this.gateway.activeTasks() },
     )
   }
 
@@ -180,7 +182,8 @@ export class A2ABridge {
     this.authorized = await this.oauth.hasCredentials()
     try { await this.oauth.accessToken(); this.authorized = true }
     catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
-    try { await this.gateway.register(this.allowedSkills) }
+    try { const registration = await this.gateway.register(this.allowedSkills)
+      await this.runner.initialize(registration.taskEventsVersion) }
     catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
     if (this.disposed) return
     this.phase = 'connected'
@@ -329,6 +332,9 @@ export class A2ABridge {
     )
     while (!stopController.signal.aborted) {
       try {
+        void this.runner.flushReports().catch(() => {
+          this.log('error', 'Unable to flush the local task journal')
+        })
         if ((this.config.transport ?? 'pull') === 'pull') {
           // The internal pull relay carries jobs; cancellation is observed via
           // standard GetTask so a cloud CancelTask reaches the running Agent.
