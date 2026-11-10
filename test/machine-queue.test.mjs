@@ -347,13 +347,19 @@ test('an incomplete same-scope initialization can retry inventory while a restor
   const runner = new TaskRunner(f.harness, [], {}, f.report, () => {}, async () => { throw new Error('must not replay') }, async () => 'scope', {
     ...f.config, activeTasks: async () => { if (++inventories === 1) throw new Error('inventory unavailable'); return [] },
   })
-  await assert.rejects(runner.initialize(1, 1), /inventory unavailable/)
-  assert.equal(runner.localTaskCount(), 1)
-  await runner.initialize(1, 1)
-  assert.equal(inventories, 2)
-  assert.equal(runner.recoveryTasks()[0].canRelease, false)
-  assert.equal(runner.hasCapacity(), false)
-  assert.equal(f.events.some((event) => event.execution), false)
+  try {
+    await assert.rejects(runner.initialize(1, 1), /inventory unavailable/)
+    assert.equal(runner.localTaskCount(), 1)
+    await runner.initialize(1, 1)
+    assert.equal(inventories, 2)
+    assert.equal(runner.recoveryTasks()[0].canRelease, false)
+    assert.equal(runner.hasCapacity(), false)
+    assert.equal(f.events.some((event) => event.execution), false)
+  } finally {
+    // Reconciliation starts background reporting. Drain that writer before
+    // fixture teardown removes its journal directory.
+    await runner.stop()
+  }
 })
 
 test('switching authorization still refuses a current-process native turn', async (t) => {
