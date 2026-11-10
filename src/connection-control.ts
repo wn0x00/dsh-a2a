@@ -22,6 +22,7 @@ export type ConnectionControl = {
   status(): ConnectionSnapshot
   act(action: ConnectionControlAction): Promise<void>
   updater?(): PluginUpdater | undefined
+  confirmStopped?(taskId: string, deliveryId: string): Promise<void>
 }
 
 /** Management calls belong to the local Host owner, never remote task agents. */
@@ -68,6 +69,18 @@ export class ConnectionController extends TypertRemoteService {
   @Remote
   async revokeAuthorization(): Promise<ConnectionSnapshot> {
     return this.perform('revokeAuthorization')
+  }
+
+  @Remote
+  async confirmStopped(taskId: string, deliveryId: string): Promise<ConnectionSnapshot> {
+    this.requireOwner()
+    try {
+      if (!this.control.confirmStopped) throw new Error('Unavailable')
+      await this.control.confirmStopped(taskId, deliveryId)
+    } catch {
+      throw new RemoteError('gateway/bad-request', 'Machine release was not confirmed. Check that old tools have stopped and retry after reconnecting.', {})
+    }
+    return this.control.status()
   }
 
   @Remote

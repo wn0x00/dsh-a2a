@@ -33,6 +33,8 @@ export function connectionContribution(
     deviceId: z.string(),
     deviceName: z.string(),
     activeTasks: z.number().int().nonnegative(),
+    recoveryTasks: z.array(z.strictObject({ taskId: z.string().min(1).max(256),
+      deliveryId: z.string().min(1).max(512), localSessionId: z.string().max(256).optional(), canRelease: z.boolean() })).optional(),
     pendingExpiresAt: z.number().nullable(),
     lastConnectedAt: z.number().nullable(),
     lastContactAt: z.number().nullable(),
@@ -83,6 +85,7 @@ export function connectionContribution(
       'reauthorize',
       'cancelAuthorization',
       'revokeAuthorization',
+      'confirmStopped',
       'updateStatus',
       'checkUpdate',
       'installUpdate',
@@ -98,7 +101,11 @@ export function connectionContribution(
         parameters: method === 'installUpdate' ? [{
           name: 'expectedVersion', wire: 'expectedVersion', source: 'json' as const,
           codec: versionCodec, strictCodec: versionCodec,
-        }] : [],
+        }] : method === 'confirmStopped' ? ['taskId', 'deliveryId'].map((name) => {
+          const value = z.string().min(1).max(name === 'taskId' ? 256 : 512)
+          const codec = { mode: 'strict' as const, typeSymbol: `${packageName}#${name}`, create: () => value, jsonSchema: z.toJSONSchema(value) }
+          return { name, wire: name, source: 'json' as const, codec, strictCodec: codec }
+        }) : [],
         ...(method === 'status' || method === 'updateStatus'
           ? { cancellation: { parameter: 'signal' as const } }
           : {}),

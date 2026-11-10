@@ -141,6 +141,7 @@ async function renderConfiguration(t, options = {}) {
             'reauthorize',
             'cancelAuthorization',
             'revokeAuthorization',
+          'confirmStopped',
             'updateStatus',
             'checkUpdate',
             'installUpdate',
@@ -670,7 +671,7 @@ test('active work prevents reauthorization and connection errors never display a
     connection: { phase: 'connected', activeTasks: 2, canReauthorize: false },
   })
   assert.equal(page.button('重新授权').props.disabled, true)
-  assert.match(page.text(), /2 个任务执行中/)
+  assert.match(page.text(), /2 个任务执行或排队中/)
   await page.updateConnection({
     phase: 'authorization_required',
     canConnect: true,

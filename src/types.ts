@@ -99,6 +99,8 @@ export type HarnessSkill = (
 export type HarnessContext = {
   /** Release retained native sessions after the bridge has drained its tasks. */
   dispose?: () => Promise<void>
+  /** Prevent owner confirmation while the mapped native writer is running. */
+  sessionBusy?: (sessionId: string) => boolean
   /** Map this to the public Agent/Session invocation API in the installed
    * Harness release. The bridge itself does not import private Harness code. */
   agents: {
@@ -346,6 +348,7 @@ export type AgentCard = {
 }
 
 export type DeviceRegistration = {
+  executionLeaseVersion?: number
   taskEventsVersion?: number
   deviceId: string
   connectionToken?: string
@@ -371,7 +374,10 @@ export type TaskDiagnostic = {
   selection_source?: 'config' | 'env' | 'default' | 'restored'
 }
 
+export type DeviceRecovery = { taskId: string; deliveryId: string; state: A2ATaskState; requiresConfirmation: true }
+
 export type TaskEvent = {
+  execution?: { delivery_id: string; phase: 'drained'; confirmed_stopped?: true }
   event_id?: string
   diagnostics?: TaskDiagnostic
   state?: A2ATaskState

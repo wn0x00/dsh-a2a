@@ -29,6 +29,7 @@ export type ConnectionSnapshot = {
   deviceId: string
   deviceName: string
   activeTasks: number
+  recoveryTasks?: Array<{ taskId: string; deliveryId: string; localSessionId?: string; canRelease: boolean }>
   pendingExpiresAt: number | null
   lastConnectedAt: number | null
   lastContactAt: number | null

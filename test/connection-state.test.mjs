@@ -21,6 +21,7 @@ async function fixture(t, options = {}) {
     { agents: { run: options.run ?? (async () => ({})) } },
     {
       gatewayUrl: 'https://platform.example',
+      ...(options.taskStorageDirectory ? { taskStorageDirectory: options.taskStorageDirectory } : {}),
       ...(options.tasks ? { executionMode: 'a2a-message' } : {}),
       transport: 'pull',
       pollIntervalMs: 250,
@@ -58,8 +59,9 @@ async function fixture(t, options = {}) {
           registrations.push(new Headers(init.headers).get('authorization'))
           await options.registerGate?.()
           if (rejectRegistration) return new Response(null, { status: 503 })
-          return Response.json({ deviceId: 'same-device' })
+          return Response.json({ deviceId: 'same-device', ...(options.taskStorageDirectory ? { taskEventsVersion: 1, executionLeaseVersion: 1 } : {}) })
         }
+        if (String(url).includes('/tasks/active')) return Response.json(options.inventory?.(new Headers(init.headers).get('authorization')) ?? { tasks: [], recoveries: [], next_after_id: null })
         if (options.tasks && String(url).endsWith('/next') && !delivered) {
           delivered = true
           return Response.json({
@@ -78,7 +80,7 @@ async function fixture(t, options = {}) {
             },
           })
         }
-        if (String(url).endsWith('/events')) return Response.json({})
+        if (String(url).endsWith('/events')) { options.receipts?.push(JSON.parse(init.body)); return Response.json({}) }
         return new Response(null, { status: 204 })
       },
     },
@@ -390,4 +392,36 @@ test('revocation fences concurrent consent and updater handoff', async (t) => {
   await assert.rejects(f.bridge.pauseForUpdate(), /operation is active/)
   release()
   await operation
+})
+
+
+test('an unknown held lease permits reauthorization and becomes a minimal old-grant recovery without releasing the slot', async (t) => {
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { TaskJournal } = await import('../dist/task-journal.js')
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-reauthorize-held-'))
+  const receipts = []
+  const task = { id: 'old-task', contextId: 'old-context', status: { state: 'TASK_STATE_WORKING' },
+    metadata: { executionLease: { deliveryId: 'old-task:message', phase: 'running', cancelRequested: false } } }
+  const f = await fixture(t, { taskStorageDirectory: directory, receipts, inventory: (authorization) =>
+    authorization === 'Bearer old-access' ? { tasks: [{ task, action: 'inspect' }], recoveries: [], next_after_id: null }
+      : { tasks: [], recoveries: [{ taskId: task.id, deliveryId: 'old-task:message', state: 'TASK_STATE_WORKING', requiresConfirmation: true }], next_after_id: null } })
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await f.bridge.start()
+  assert.equal(f.bridge.status().recoveryTasks.length, 1)
+  assert.equal(f.bridge.status().activeTasks, 0)
+  assert.equal(f.bridge.status().canReauthorize, true)
+  await f.bridge.reauthorize()
+  assert.equal(f.opened.length, 1)
+  assert.equal(receipts.some((event) => event.execution), false)
+  await f.bridge.completeAuthorization('new-code', f.state())
+  assert.equal(f.bridge.status().recoveryTasks.length, 1)
+  assert.equal(receipts.some((event) => event.execution), false)
+  const old = new TaskJournal(directory, 'old-session'); await old.load()
+  assert.equal(old.get('old-task').execution.phase, 'held')
+  await f.bridge.confirmStopped('old-task', 'old-task:message')
+  assert.equal(f.bridge.status().recoveryTasks.length, 0)
+  assert.deepEqual(Object.keys(receipts.at(-1)).sort(), ['deviceId', 'event_id', 'execution'])
+  assert.equal(receipts.at(-1).execution.confirmed_stopped, true)
 })

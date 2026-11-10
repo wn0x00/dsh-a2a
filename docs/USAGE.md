@@ -221,7 +221,7 @@ A new A2A `contextId` creates a persistent DSH session. Subsequent messages with
 the same context reuse the live session, or resume it after restarting Harness.
 Each completed turn is flushed to native session storage. The session stays
 attached to its workspace and visible after the task finishes.
-Requests for the same context execute sequentially. The plugin only resumes
+All tasks on one device execute sequentially; the same context also retains its session order. The plugin only resumes
 sessions it created, and isolates mappings by platform/profile and local
 authorization epoch. Reauthorizing starts a new scope; refreshing tokens does
 not. Changing the working directory or Agent preset requires a new platform
@@ -299,8 +299,7 @@ A local task has **no implicit total execution deadline**. Submitting it still
 returns a receipt immediately; the hosted Agent does not hold a model turn open
 or repeatedly poll until it finishes. If the caller explicitly supplies
 `timeout_seconds`, the accepted range is 1–604800 seconds (seven days). That
-policy covers the local execution promise, including a same-context queue and
-session persistence. Gateway task requests have a separate 15-second
+policy starts when the local executor begins (after waiting in the device queue) and includes session persistence. Gateway task requests have a separate 15-second
 transport bound. Disconnecting the platform transport does not stop local work;
 explicit cancellation, authorization revocation and local host shutdown still do.
 
@@ -327,14 +326,14 @@ It records task/context/delivery IDs, the local session association, the last
 200 structured diagnostics and unacknowledged events. It does not store the
 request prompt, commands or raw native events. Final text/artifacts are retained
 as the task result; files use user-only permissions. Completed, acknowledged
-records older than 30 days are pruned at startup. An offline outbox keeps all
+records with released machine leases older than 30 days are pruned at startup. An offline outbox keeps all
 state/result events and up to 1000 diagnostics per task; repeated heartbeats
 coalesce to the latest one.
 
 Each report has a stable `event_id`. A result or diagnostic is persisted before
 transmission and retried until the server confirms it, including after a lost
 HTTP acknowledgement or client restart. Reporting uses a separate bounded carrier
-so an offline outbox does not block cancellation checks or new-task pulls. A
+so an offline outbox does not block cancellation checks. A machine release awaiting acknowledgement intentionally blocks new-task pulls. A
 state transition rejected after another actor completed/canceled a task is
 quarantined locally only after querying and confirming that terminal state. The platform deduplicates repeated IDs.
 On startup, the client reads the platform's active-task inventory **only to
@@ -359,3 +358,58 @@ These guarantees describe this repository's **DSH native adapter**. A separately
 installed Desktop Codex adapter must implement the same reporting/recovery
 contract and advertise its own executor/version. Installing this package cannot
 prove that another adapter was updated or that it supports turn cancellation.
+
+
+## Machine queue and recovery (0.2.6)
+
+One registered DSH device executes one task at a time, across all A2A contexts.
+The client persists a queued receipt before admitting local work, then runs
+received work in order. It does not switch the visible DSH conversation, change
+its workspace or grant new tool permissions. Other registered machines have
+independent queues. Platform conversation-to-device/context binding and routing
+belong to the platform; a device does not silently move an existing session to
+another machine or create isolated working directories.
+
+A durable client advertises `executionLeaseVersion: 1` when registering. The
+platform returns the same version and holds a single device slot for the current
+`deliveryId`. The client does not pull another task while it has queued, running,
+draining or unacknowledged-release work. Cancellation is also observed through
+`metadata.executionLease.cancelRequested`, even while the business task remains
+`WORKING`. Local queued cancellation never enters the executor.
+
+The final response and `execution: { delivery_id, phase: 'drained' }` are sent
+together only after native tools reach idle and session persistence succeeds.
+Timeout triggers cancellation but does not free the machine while cleanup is
+still running. The stable event ID and release payload remain in the private
+outbox until acknowledged; a lost response or network interruption does not
+permit another task to run. An old server without lease negotiation still gets
+serial local execution and final responses after cleanup, but cannot supply the
+server-side lease and recovery guarantees. A new platform can require a lease-
+capable client before allowing task claims.
+
+Startup inspects already received tasks without replaying them. A persisted
+queued receipt proves no executor started and can be marked interrupted and
+released. Previously running work always requires owner confirmation after restart, even
+if its restored session is idle: that state cannot prove old external processes
+stopped. A busy or missing writer, an unknown old task, or failed persistence
+keeps the slot occupied. Unclaimed
+platform tasks remain in its queue. Already received task prompts are not saved
+or automatically resubmitted after restart.
+
+When a slot needs inspection, **设置 → A2A 平台任务 → 平台连接状态** shows
+**旧任务需要确认停止，机器队列已暂停**. Expand it to see the task and any known
+DSH session ID. Inspect the old task, shell/desktop tools and processes on this
+machine; stop them before choosing **确认已停止并释放机器** and confirming the
+second prompt. This is the local owner's explicit confirmation, not a command
+that kills an unknown process. The action is disabled while a native writer or
+local task is running, and the notice remains until the platform acknowledges
+release. Network failure is safe to retry.
+
+A recovered slot with no current local execution does not prevent reauthorization;
+the old journal and platform lease stay intact while a new OAuth grant is obtained.
+After reauthorization, the platform may expose a minimal recovery list for old
+grants proved to belong to the same device owner. It contains only task/delivery
+IDs and state, not conversation inputs, results or history. These entries always
+require the same explicit owner confirmation. Their release event contains only
+an event ID and `execution` with `confirmed_stopped: true`; normal task-reading
+permissions are unchanged. An unproven owner cannot recover another user's slot.
