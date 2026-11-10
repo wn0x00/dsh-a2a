@@ -274,3 +274,65 @@ test('a restored idle native session does not release a previously running deliv
   assert.equal(restarted.hasCapacity(), false)
   assert.equal(restarted.recoveryTasks()[0].localSessionId, 'restored-idle-session')
 })
+
+
+test('a cancellation observed during admission never starts native execution and still releases the lease', async (t) => {
+  let executions = 0
+  const task = remote('task'); task.metadata.executionLease.cancelRequested = true
+  const f = await fixture(t, async () => { executions++; return {} }, { runner: { getTask: async () => task } })
+  await f.runner.handle(envelope('task'))
+  assert.equal(executions, 0)
+  const ending = f.events.find((event) => event.execution)
+  assert.equal(ending.state, 'TASK_STATE_CANCELED')
+  assert.equal(ending.execution.delivery_id, 'task:delivery')
+  assert.equal(f.runner.hasCapacity(), true)
+})
+
+test('an unknown recovery hold authenticates periodically without claiming and detects offline or revoked access', async (t) => {
+  const { createBridge } = await import('../dist/plugin.js')
+  const { MemoryTokenStore } = await import('../dist/pkce.js')
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-recovery-heartbeat-'))
+  const store = new MemoryTokenStore(); await store.set({ accessToken: 'token', expiresAt: Date.now() + 3600000 })
+  const task = remote('unknown')
+  let checks = 0, claims = 0, executions = 0, offline = false, revoked = false
+  const bridge = createBridge({ agents: { run: async () => { executions++; return {} } } }, {
+    gatewayUrl: 'https://platform.example', executionMode: 'a2a-message', transport: 'pull', pollIntervalMs: 250,
+    taskStorageDirectory: directory, device: { id: 'device', name: 'device', capabilities: [] },
+    oauth: { clientId: 'test', authorizationEndpoint: 'https://auth.example', tokenEndpoint: 'https://auth.example/token', redirectUri: 'http://127.0.0.1/callback', scopes: [], tokenStore: store, openAuthorizationUrl() {} },
+    fetch: async (url) => {
+      const path = new URL(url).pathname
+      if (path.endsWith('/register')) return Response.json({ deviceId: 'device', taskEventsVersion: 1, executionLeaseVersion: 1 })
+      if (path.endsWith('/tasks/active')) {
+        checks++
+        if (offline) throw new Error('offline')
+        if (revoked) return new Response(null, { status: 401 })
+        return Response.json({ tasks: [{ task: { ...task, status: { state: task.state } }, action: 'inspect' }], recoveries: [], next_after_id: null })
+      }
+      if (path.endsWith('/events')) return Response.json({})
+      if (path.endsWith('/next')) { claims++; return new Response(null, { status: 204 }) }
+      throw new Error('Unexpected request: ' + path)
+    },
+  })
+  t.after(async () => { await bridge.stop(); await rm(directory, { recursive: true, force: true }) })
+  await bridge.start()
+  assert.equal(bridge.status().recoveryTasks.length, 1)
+  assert.equal(checks, 1)
+  const registeredAt = bridge.status().lastContactAt
+  t.mock.timers.tick(1000)
+  await new Promise((resolve) => realTimeout(resolve, 300))
+  assert.equal(checks, 1)
+  assert.equal(bridge.status().lastContactAt, registeredAt)
+  t.mock.timers.tick(30001)
+  await until(() => checks === 2 && bridge.status().lastContactAt > registeredAt)
+  const contactedAt = bridge.status().lastContactAt
+  offline = true; t.mock.timers.tick(31000)
+  await until(() => bridge.status().phase === 'reconnecting')
+  assert.equal(bridge.status().lastContactAt, contactedAt)
+  offline = false; revoked = true
+  await until(() => bridge.status().phase === 'authorization_required')
+  assert.equal(bridge.status().lastContactAt, contactedAt)
+  assert.equal(claims, 0)
+  assert.equal(executions, 0)
+  assert.equal(bridge.status().recoveryTasks.length, 1)
+})
