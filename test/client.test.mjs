@@ -478,6 +478,27 @@ test('a concurrent host edit is fenced by the revision read when drafting began'
   assert.equal(page.input().props.value, 'C:\\another-editor')
 })
 
+test('a refused save re-pins the draft revision so a retry overwrites consciously', async (t) => {
+  const page = await renderConfiguration(t)
+  await page.edit('C:\\my-edit')
+  await act(async () =>
+    page.publish({
+      value: { workingDirectory: 'C:\\another-editor' },
+      revision: 4,
+    }),
+  )
+  await page.save()
+  assert.equal(page.writes[0].revision, 3)
+  assert.match(page.text(), /未能保存/)
+  await act(async () => page.button('重试保存').props.onClick())
+  assert.equal(page.writes[1].revision, 4)
+  assert.deepEqual(page.writes[1].ops, [
+    { op: 'set', path: ['workingDirectory'], value: 'C:\\my-edit' },
+  ])
+  assert.match(page.text(), /已自动保存/)
+  assert.equal(page.input().props.value, 'C:\\my-edit')
+})
+
 test('connection failure keeps the draft and allows retry', async (t) => {
   const page = await renderConfiguration(t, { saveError: true })
   await page.choose()

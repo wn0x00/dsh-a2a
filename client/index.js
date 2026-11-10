@@ -178,9 +178,17 @@ window.__ModuleLoader__.load({
               text: '已自动保存',
             })
           } else {
+            // A refusal re-read the Host document (configForm recovery). Re-pin
+            // the draft to the fresh revision so 重试保存 consciously overwrites
+            // the newer configuration instead of failing on the same stale read
+            // forever; 撤销修改 still adopts the Host value.
+            setDraft((previous) => previous && ({
+              ...previous,
+              revision: form.getSnapshot().revision ?? previous.revision,
+            }))
             setNotice({
               error: true,
-              text: '未能保存。请确认目录和预设可用；配置可能已更新，请撤销修改后重试。',
+              text: '未能保存。配置可能已在别处更新：重试将把当前填写内容覆盖保存，撤销修改则采用最新配置。',
             })
           }
         } catch {
