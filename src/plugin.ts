@@ -19,6 +19,7 @@ export class A2ABridge {
   private notice: ConnectionNotice = 'none'
   private lastConnectedAt: number | null = null
   private lastContactAt: number | null = null
+  private lastRecoveryCheckAt = 0
   private restoreAfterAuthorization = false
   private authorizationTimer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
@@ -192,7 +193,7 @@ export class A2ABridge {
     catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
     if (this.disposed) return
     this.phase = 'connected'
-    this.lastConnectedAt = this.lastContactAt = Date.now()
+    this.lastConnectedAt = this.lastContactAt = this.lastRecoveryCheckAt = Date.now()
     // Register for both pull and SSE transports.  Registration binds the stable
     // device id to the OAuth subject before the first task claim; pull mode used
     // to skip it and therefore required an out-of-band database row.
@@ -344,15 +345,27 @@ export class A2ABridge {
           // The internal pull relay carries jobs; cancellation is observed via
           // standard GetTask so a cloud CancelTask reaches the running Agent.
           const recoveries = new Set(this.runner.recoveryTasks().map((task) => task.taskId))
-          await Promise.all(this.runner.activeTaskIds().filter((taskId) => !recoveries.has(taskId)).map(async (taskId) => {
+          const inspected = this.runner.activeTaskIds().filter((taskId) => !recoveries.has(taskId))
+          await Promise.all(inspected.map(async (taskId) => {
             const task = await this.gateway.getTask(taskId, stopController.signal)
             if (task.state === 'TASK_STATE_CANCELED' || (task.metadata?.executionLease as { cancelRequested?: boolean } | undefined)?.cancelRequested) this.runner.cancel(taskId)
           }))
-          const envelope = this.runner.hasCapacity()
-            ? await this.gateway.nextTask(stopController.signal) : undefined
+          let contacted = inspected.length > 0
+          const capacity = this.runner.hasCapacity()
+          const envelope = capacity ? await this.gateway.nextTask(stopController.signal) : undefined
+          if (capacity) contacted = true
+          else if (!inspected.length && Date.now() - this.lastRecoveryCheckAt >= 30_000) {
+            // Recovery holds must retain the machine slot, but still check the
+            // authenticated connection. This read never claims or replays work.
+            await this.gateway.activeTasks()
+            this.lastRecoveryCheckAt = Date.now()
+            contacted = true
+          }
           if (stopController.signal.aborted) break
-          this.phase = 'connected'
-          this.lastContactAt = Date.now()
+          if (contacted) {
+            this.phase = 'connected'
+            this.lastContactAt = Date.now()
+          }
           if (envelope) this.dispatch({ type: 'task', envelope })
           await this.sleep(
             envelope ? Math.min(delay, 250) : delay,

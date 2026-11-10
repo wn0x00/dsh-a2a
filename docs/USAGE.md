@@ -403,7 +403,10 @@ machine; stop them before choosing **确认已停止并释放机器** and confir
 second prompt. This is the local owner's explicit confirmation, not a command
 that kills an unknown process. The action is disabled while a native writer or
 local task is running, and the notice remains until the platform acknowledges
-release. Network failure is safe to retry.
+release. Network failure is safe to retry. While only recovery holds remain, the client
+checks the authenticated active-task inventory every 30 seconds without claiming
+work. This keeps the device presence current and detects revoked authorization;
+connection timestamps advance only after actual successful gateway contact.
 
 A recovered slot with no current local execution does not prevent reauthorization;
 the old journal and platform lease stay intact while a new OAuth grant is obtained.

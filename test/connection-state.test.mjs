@@ -18,7 +18,7 @@ async function fixture(t, options = {}) {
   let rejectRegistration = false
   let delivered = false
   const bridge = createBridge(
-    { agents: { run: options.run ?? (async () => ({})) } },
+    { agents: { run: options.run ?? (async () => ({})) }, ...(options.sessionBusy ? { sessionBusy: options.sessionBusy } : {}) },
     {
       gatewayUrl: 'https://platform.example',
       ...(options.taskStorageDirectory ? { taskStorageDirectory: options.taskStorageDirectory } : {}),
@@ -81,6 +81,7 @@ async function fixture(t, options = {}) {
           })
         }
         if (String(url).endsWith('/events')) { options.receipts?.push(JSON.parse(init.body)); return Response.json({}) }
+        if (new URL(url).pathname === '/a2a' && options.getTask) return Response.json({ result: options.getTask() })
         return new Response(null, { status: 204 })
       },
     },
@@ -424,4 +425,38 @@ test('an unknown held lease permits reauthorization and becomes a minimal old-gr
   assert.equal(f.bridge.status().recoveryTasks.length, 0)
   assert.deepEqual(Object.keys(receipts.at(-1)).sort(), ['deviceId', 'event_id', 'execution'])
   assert.equal(receipts.at(-1).execution.confirmed_stopped, true)
+})
+
+
+test('a known native writer keeps authorization and updates blocked after its task controller exits', async (t) => {
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { TaskJournal } = await import('../dist/task-journal.js')
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-busy-recovery-'))
+  const journal = new TaskJournal(directory, 'old-session'); await journal.load()
+  await journal.begin('old-task', 'old-context', 'old-task:message', { leased: true })
+  await journal.enqueue('old-task', { event_id: 'native', diagnostics: { kind: 'progress', local_session_id: 'native-writer' } })
+  await journal.acknowledge('old-task', 'native')
+  const task = { id: 'old-task', contextId: 'old-context', status: { state: 'TASK_STATE_WORKING' },
+    metadata: { executionLease: { deliveryId: 'old-task:message', phase: 'running', cancelRequested: false } } }
+  let busy = true
+  const f = await fixture(t, { taskStorageDirectory: directory, getTask: () => task,
+    sessionBusy: (id) => { assert.equal(id, 'native-writer'); return busy },
+    inventory: () => ({ tasks: [{ task, action: 'inspect' }], recoveries: [], next_after_id: null }) })
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await f.bridge.start()
+  assert.equal(f.bridge.status().activeTasks, 1)
+  assert.equal(f.bridge.status().recoveryTasks[0].canRelease, false)
+  assert.equal(f.bridge.status().canReauthorize, false)
+  assert.equal(f.bridge.status().canRevokeAuthorization, false)
+  await assert.rejects(f.bridge.reauthorize(), (error) => error.code === 'busy')
+  await assert.rejects(f.bridge.revokeAuthorization(), (error) => error.code === 'busy')
+  await assert.rejects(f.bridge.pauseForUpdate(), (error) => error.code === 'busy')
+  assert.equal(f.opened.length, 0)
+  busy = false
+  assert.equal(f.bridge.status().activeTasks, 0)
+  assert.equal(f.bridge.status().canReauthorize, true)
+  await f.bridge.reauthorize()
+  assert.equal(f.opened.length, 1)
 })

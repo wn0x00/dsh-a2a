@@ -98,7 +98,7 @@ export class TaskRunner {
     this.executionLeases = executionLeaseVersion >= 1
     const scope = await this.sessionScope()
     if (scope === this.journalScope && this.initialized) return
-    if (this.active.size) throw new Error('Cannot switch task authorization while work is active')
+    if (this.localTaskCount()) throw new Error('Cannot switch task authorization while work is active')
     this.journal = new TaskJournal(this.options.storageDirectory, scope)
     await this.journal.load()
     this.journalScope = scope
@@ -280,8 +280,13 @@ export class TaskRunner {
       }
       // An idempotent ACK can describe an older WORKING report after the user
       // already canceled the task. Recheck current state before any side effect.
-      if (this.options.getTask && (await this.options.getTask(taskId)).state !== 'TASK_STATE_WORKING') {
-        throw new TaskAdmissionClosed('Task is no longer available for execution')
+      if (this.options.getTask) {
+        const remote = await this.options.getTask(taskId)
+        if ((remote.metadata?.executionLease as { cancelRequested?: boolean } | undefined)?.cancelRequested === true) {
+          this.cancel(taskId)
+          throw new DOMException('Task cancellation was requested before execution', 'AbortError')
+        }
+        if (remote.state !== 'TASK_STATE_WORKING') throw new TaskAdmissionClosed('Task is no longer available for execution')
       }
     }
   }
@@ -335,7 +340,16 @@ export class TaskRunner {
 
   cancel(taskId: string): void { this.active.get(taskId)?.abort() }
 
-  localTaskCount(): number { return this.active.size }
+  localTaskCount(): number {
+    // A failed drain may leave a known native writer after its controller exits.
+    // Keep that evidence across authorization/update checks until it is idle.
+    const tasks = new Set(this.active.keys())
+    for (const row of this.journal?.list() ?? []) {
+      if (row.execution && row.execution.phase !== 'released' && row.local_session_id
+        && this.harness.sessionBusy?.(row.local_session_id)) tasks.add(row.task_id)
+    }
+    return tasks.size
+  }
 
   hasCapacity(): boolean {
     return this.active.size === 0 && !this.journal?.list().some((row) => row.execution && row.execution.phase !== 'released')
