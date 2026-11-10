@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { createNativeHarnessContext } from '../dist/harness.js'
+import { TaskRunner } from '../dist/task-runner.js'
 
 const message = {
   messageId: 'message', role: 'ROLE_USER', parts: [{ text: 'Inspect this project' }],
@@ -66,7 +67,7 @@ async function fixture(t, options = {}) {
     get(name) {
       if (name === 'agentPresets') return options.noPresets ? undefined : presets
       if (name === 'sessionPersistence') return {}
-      if (name === 'sessions') return { async flush() { return true } }
+      if (name === 'sessions') return { async flush() { return options.flush ? options.flush() : true } }
       if (name === 'workspaceRegistry') return { async create(path) {
         return { id: 'workspace', path, async attachSession() {} }
       } }
@@ -217,3 +218,84 @@ test('a resumed task cannot mistake an earlier completed turn for its own comple
   })
   await assert.rejects(adapter().agents.run('', message, runContext()), /MISSING_TURN_END/)
 })
+
+async function nativeTask(t, options) {
+  const f = await fixture(t, options)
+  const harness = f.adapter()
+  const events = []
+  const task = { id: 'native-task', contextId: 'context', state: 'TASK_STATE_WORKING',
+    metadata: { executionLease: { deliveryId: 'native-delivery', phase: 'running', cancelRequested: false } } }
+  const runner = new TaskRunner(harness, [], {}, async (_id, event) => {
+    events.push(structuredClone(event))
+    if (event.state) task.state = event.state
+    if (event.execution) task.metadata.executionLease.phase = 'released'
+  }, () => {}, (input, context) => harness.agents.run('', input, context), async () => 'local-consent', {
+    storageDirectory: join(f.workspace, 'tasks'), getTask: async () => task, activeTasks: async () => [],
+  })
+  await runner.initialize(1, 1)
+  return { ...f, runner, events, envelope: { type: 'task', envelope: {
+    task, deliveryId: 'native-delivery', executionMode: 'a2a-message', message,
+  } } }
+}
+
+test('stopping a native turn reports cancellation only after its session is durable', { timeout: 10_000 }, async (t) => {
+  let flushing, finishFlush
+  const flushStarted = new Promise((resolve) => { flushing = resolve })
+  const flushAllowed = new Promise((resolve) => { finishFlush = resolve })
+  const f = await nativeTask(t, {
+    turnEvents: [{ type: 'turn/end', data: { reason: { kind: 'aborted' } } }],
+    async flush() { flushing(); await flushAllowed; return true },
+  })
+  const work = f.runner.handle(f.envelope)
+  try {
+    await flushStarted
+    assert.equal(f.runner.hasCapacity(), false)
+    assert.equal(f.events.some((event) => event.execution || event.state === 'TASK_STATE_CANCELED'), false)
+    finishFlush()
+    await work
+    const ending = f.events.find((event) => event.execution)
+    assert.equal(ending.state, 'TASK_STATE_CANCELED')
+    assert.equal(ending.diagnostics.error_code, 'cancelled')
+    assert.match(ending.message, /Harness 会话已取消/)
+    assert.equal(ending.execution.phase, 'drained')
+    assert.equal(ending.execution.delivery_id, 'native-delivery')
+    assert.equal(f.runner.hasCapacity(), true)
+    assert.equal(f.calls.inputs.length, 1)
+    assert.equal(f.events.some((event) => event.state === 'TASK_STATE_FAILED'), false)
+  } finally { finishFlush(); await work; await f.runner.stop() }
+})
+
+for (const reason of [
+  { kind: 'interrupted' },
+  { kind: 'error', error: { code: 'PROVIDER_ERROR', message: 'Provider unavailable' } },
+]) {
+  test(`native ${reason.kind} remains failed rather than being treated as user cancellation`, async (t) => {
+    const f = await nativeTask(t, { turnEvents: [{ type: 'turn/end', data: { reason } }] })
+    try {
+      await f.runner.handle(f.envelope)
+      const ending = f.events.find((event) => event.execution)
+      assert.equal(ending.state, 'TASK_STATE_FAILED')
+      assert.equal(ending.diagnostics.error_code, 'execution_failed')
+      assert.equal(ending.execution.phase, 'drained')
+      assert.equal(f.runner.hasCapacity(), true)
+    } finally { await f.runner.stop() }
+  })
+}
+
+for (const failure of ['unattached', 'write-error']) {
+  test(`a locally aborted turn with ${failure} persistence retains its machine for recovery`, async (t) => {
+    const f = await nativeTask(t, {
+      turnEvents: [{ type: 'turn/end', data: { reason: { kind: 'aborted' } } }],
+      async flush() { if (failure === 'write-error') throw new Error('storage unavailable'); return false },
+    })
+    try {
+      await f.runner.handle(f.envelope)
+      const ending = f.events.find((event) => event.state === 'TASK_STATE_FAILED')
+      assert.equal(ending.diagnostics.error_code, 'drain_unconfirmed')
+      assert.equal(ending.diagnostics.stage, 'recovery_required')
+      assert.equal(f.events.some((event) => event.execution), false)
+      assert.equal(f.runner.hasCapacity(), false)
+      assert.equal(f.runner.recoveryTasks()[0].taskId, 'native-task')
+    } finally { await f.runner.stop() }
+  })
+}

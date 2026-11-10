@@ -460,10 +460,11 @@ export class TaskRunner {
         : error instanceof HarnessInputRequiredError ? 'TASK_STATE_INPUT_REQUIRED' : 'TASK_STATE_FAILED'
       const errorCode = error instanceof HarnessTimeoutError ? 'execution_deadline_exceeded'
         : error instanceof HarnessAuthRequiredError ? (latest.error_code ?? 'credentials_required')
-        : controller.signal.aborted ? 'cancelled' : 'execution_failed'
+        : state === 'TASK_STATE_CANCELED' ? 'cancelled' : 'execution_failed'
       outcome = { state, message: errorMessage(error),
         ...(this.journal ? { diagnostics: safeDiagnostic({ ...latest, kind: 'error', error_code: errorCode, changes: 'unknown', elapsed_ms: Date.now() - started }) } : {}) }
-      this.log('warn', 'A2A task failed', { taskId: task.id, state })
+      this.log(state === 'TASK_STATE_CANCELED' ? 'info' : 'warn',
+        state === 'TASK_STATE_CANCELED' ? 'A2A task cancelled' : 'A2A task failed', { taskId: task.id, state })
     } finally {
       // A timeout/cancellation is not a machine release. Retain the local FIFO
       // and remote lease until tools drain and native history has been flushed.
