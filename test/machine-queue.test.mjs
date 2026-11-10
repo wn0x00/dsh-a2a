@@ -336,3 +336,39 @@ test('an unknown recovery hold authenticates periodically without claiming and d
   assert.equal(executions, 0)
   assert.equal(bridge.status().recoveryTasks.length, 1)
 })
+
+test('an incomplete same-scope initialization can retry inventory while a restored native writer is busy', async (t) => {
+  const f = await fixture(t, async () => { throw new Error('must not replay') }, { harness: { sessionBusy: () => true } })
+  const journal = new TaskJournal(f.directory, 'scope'); await journal.load()
+  await journal.begin('restored', 'context', 'restored:delivery', { leased: true })
+  await journal.enqueue('restored', { event_id: 'session', diagnostics: { kind: 'progress', local_session_id: 'busy-session' } })
+  await journal.acknowledge('restored', 'session')
+  let inventories = 0
+  const runner = new TaskRunner(f.harness, [], {}, f.report, () => {}, async () => { throw new Error('must not replay') }, async () => 'scope', {
+    ...f.config, activeTasks: async () => { if (++inventories === 1) throw new Error('inventory unavailable'); return [] },
+  })
+  await assert.rejects(runner.initialize(1, 1), /inventory unavailable/)
+  assert.equal(runner.localTaskCount(), 1)
+  await runner.initialize(1, 1)
+  assert.equal(inventories, 2)
+  assert.equal(runner.recoveryTasks()[0].canRelease, false)
+  assert.equal(runner.hasCapacity(), false)
+  assert.equal(f.events.some((event) => event.execution), false)
+})
+
+test('switching authorization still refuses a current-process native turn', async (t) => {
+  const work = deferred()
+  let scope = 'scope', started = false, signal
+  const f = await fixture(t, async () => ({}))
+  const runner = new TaskRunner(f.harness, [], {}, f.report, () => {}, async (_message, context) => {
+    started = true; signal = context.signal; await work.promise; return {}
+  }, async () => scope, f.config)
+  await runner.initialize(1, 1)
+  const running = runner.handle(envelope('active'))
+  t.after(async () => { work.resolve(); await running })
+  await until(() => started)
+  scope = 'replacement'
+  await assert.rejects(runner.initialize(1, 1), /Cannot switch task authorization/)
+  assert.equal(signal.aborted, false)
+  work.resolve(); await running
+})

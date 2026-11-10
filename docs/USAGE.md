@@ -314,13 +314,11 @@ returns `AUTH_REQUIRED`, not an ordinary failed task; configure that same route
 in the host, then continue the interrupted task. The plugin never chooses another
 account or model to conceal a credential error.
 
-Platforms advertise `taskEventsVersion: 1` in device registration to enable the
-new durable reporting protocol. Older platforms continue to receive the existing
-state reports, without unsupported fields; they do not gain the recovery
-properties below until upgraded. The platform and this package must both be
-updated before relying on long-task diagnostics.
+Native profiles require `taskEventsVersion: 1` and `executionLeaseVersion: 1` in
+the registration response. Version 0.3.0 does not fall back to an older task
+protocol. Update the platform and plugin together before receiving tasks.
 
-For a capable platform, the plugin writes a private task journal beside its
+The plugin writes a private task journal beside its
 profile's credential directory, isolated again by the authorization epoch.
 It records task/context/delivery IDs, the local session association, the last
 200 structured diagnostics and unacknowledged events. It does not store the
@@ -360,7 +358,7 @@ contract and advertise its own executor/version. Installing this package cannot
 prove that another adapter was updated or that it supports turn cancellation.
 
 
-## Machine queue and recovery (0.2.6)
+## Machine queue and recovery
 
 One registered DSH device executes one task at a time, across all A2A contexts.
 The client persists a queued receipt before admitting local work, then runs
@@ -382,10 +380,8 @@ together only after native tools reach idle and session persistence succeeds.
 Timeout triggers cancellation but does not free the machine while cleanup is
 still running. The stable event ID and release payload remain in the private
 outbox until acknowledged; a lost response or network interruption does not
-permit another task to run. An old server without lease negotiation still gets
-serial local execution and final responses after cleanup, but cannot supply the
-server-side lease and recovery guarantees. A new platform can require a lease-
-capable client before allowing task claims.
+permit another task to run. Plugin updates also wait for native execution to
+stop and for pending reports to be acknowledged.
 
 Startup inspects already received tasks without replaying them. A persisted
 queued receipt proves no executor started and can be marked interrupted and
@@ -416,3 +412,26 @@ IDs and state, not conversation inputs, results or history. These entries always
 require the same explicit owner confirmation. Their release event contains only
 an event ID and `execution` with `confirmed_stopped: true`; normal task-reading
 permissions are unchanged. An unproven owner cannot recover another user's slot.
+
+
+## Connection recovery
+
+Startup, explicit connection and post-authorization registration share the same
+retry flow. Network failures and HTTP 408/429/5xx retain the saved grant and retry
+in the background. Token refresh requests and gateway task requests have separate
+15-second transport limits; these do not limit local task execution. A rejected
+OAuth grant requires an explicit local authorization action and never opens the
+browser automatically. An explicit connection or authorization callback can
+report its first registration failure while Settings shows the background retry.
+
+The structured `execution_protocol_required` response triggers a fresh device
+registration with the existing OAuth grant. Registration attempts are separated
+by at least one second (three seconds with default settings). A same-protocol
+registration preserves current local execution and does not run restart recovery
+against live work. Invalid protocol negotiation stops task admission instead of
+falling back to an older protocol.
+
+A connected device can still have a historical task awaiting confirmation. This
+holds its machine queue but does not mean the connection is offline. Confirming
+that the old task stopped displays its own operation progress and clears the
+notice only after the platform acknowledges the release.

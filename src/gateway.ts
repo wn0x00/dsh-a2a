@@ -13,7 +13,22 @@ import { OAuthClient, OAuthLoginRequiredError } from './pkce.js'
 import type { BridgeConfig, DeviceConfig } from './types.js'
 
 export class GatewayRequestError extends Error {
-  constructor(readonly status: number) { super(`Gateway request failed (${status})`) }
+  constructor(readonly status: number, readonly code?: 'execution_protocol_required') { super(`Gateway request failed (${status})`) }
+}
+
+export class GatewayTransportError extends Error {
+  constructor() { super('Gateway request did not complete') }
+}
+
+/** Reading a response can fail after fetch has already received its headers. */
+async function readGatewayJson(response: Response, allowMalformed = false): Promise<unknown> {
+  try { return await response.json() } catch (error) {
+    if (error instanceof TypeError || (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name))) {
+      throw new GatewayTransportError()
+    }
+    if (allowMalformed && error instanceof SyntaxError) return null
+    throw error
+  }
 }
 
 type FetchImpl = typeof globalThis.fetch
@@ -267,16 +282,17 @@ export class GatewayClient {
 
   async getAgentCard(): Promise<AgentCard> {
     const response = await this.request('/.well-known/agent-card.json', { method: 'GET' })
-    return (await response.json()) as AgentCard
+    return (await readGatewayJson(response)) as AgentCard
   }
 
   updateIdentity(identity: Pick<DeviceConfig, 'name' | 'description'>): void {
     Object.assign(this.device, identity)
   }
 
-  async register(allowedSkills: string[] = [], executionLeaseVersion = 0): Promise<DeviceRegistration> {
+  async register(allowedSkills: string[] = [], executionLeaseVersion = 0, signal?: AbortSignal): Promise<DeviceRegistration> {
     const response = await this.request(this.path(this.paths.register), {
       method: 'POST',
+      ...(signal ? { signal } : {}),
       body: JSON.stringify({
         deviceId: this.device.id,
         deviceName: this.device.name,
@@ -287,7 +303,7 @@ export class GatewayClient {
         ...(executionLeaseVersion ? { executionLeaseVersion } : {}),
       }),
     })
-    const payload = asObject(await response.json())
+    const payload = asObject(await readGatewayJson(response))
     if (typeof payload.deviceId !== 'string') throw new Error('Device registration has no deviceId')
     const registration: DeviceRegistration = {
       deviceId: payload.deviceId,
@@ -321,7 +337,7 @@ export class GatewayClient {
       ...(signal ? { signal } : {}),
     })
     if (response.status === 204) return undefined
-    const payload = asObject(await response.json())
+    const payload = asObject(await readGatewayJson(response))
     const task = asTask(payload.task ?? payload)
     return taskEnvelope(task, payload.task ? payload : undefined)
   }
@@ -338,7 +354,7 @@ export class GatewayClient {
       body: JSON.stringify({ jsonrpc: '2.0', id: taskId, method: 'GetTask', params: { id: taskId } }),
       ...(signal ? { signal } : {}),
     })
-    const payload = asObject(await response.json())
+    const payload = asObject(await readGatewayJson(response))
     if (payload.error) throw new Error('Unable to read the active A2A task')
     return asTask(payload.result)
   }
@@ -350,7 +366,7 @@ export class GatewayClient {
     do {
       const query = new URLSearchParams({ limit: '100', ...(after ? { after_id: after } : {}) })
       const response = await this.request('/a2a/devices/' + encodeURIComponent(this.device.id) + '/tasks/active?' + query, { method: 'GET' })
-      const page = asObject(await response.json())
+      const page = asObject(await readGatewayJson(response))
       if (!Array.isArray(page.tasks)) throw new Error('Invalid task reconciliation response')
       for (const item of page.tasks) tasks.push(asTask(asObject(item).task))
       for (const item of Array.isArray(page.recoveries) ? page.recoveries : []) {
@@ -411,20 +427,34 @@ export class GatewayClient {
     if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
     const connectionToken = this.registration?.connectionToken
     if (connectionToken) headers.set('x-device-connection', connectionToken)
-    const response = await this.fetchImpl(new URL(path, this.gatewayUrl), {
+    let response: Response
+    try { response = await this.fetchImpl(new URL(path, this.gatewayUrl), {
       ...init,
       // Bound transport attempts independently of the task's execution time.
       ...(headers.get('accept') !== 'text/event-stream' ? {
         signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
       } : {}),
       headers,
-    })
+    }) } catch (error) {
+      if (init.signal?.aborted) throw error
+      throw new GatewayTransportError()
+    }
     if (response.status === 401) {
       const rotated = await this.oauth.handleUnauthorized(token)
       if (rotated && !retried) return this.request(path, init, true)
       throw new OAuthLoginRequiredError()
     }
-    if (!response.ok) throw new GatewayRequestError(response.status)
+    if (!response.ok) {
+      let code: 'execution_protocol_required' | undefined
+      if (response.status === 409) {
+        // Preserve only the recognized protocol signal, never arbitrary server
+        // response bodies that may contain private data.
+        const body = await readGatewayJson(response, true) as { detail?: unknown } | null
+        const detail = body?.detail
+        if (detail && typeof detail === 'object' && 'code' in detail && detail.code === 'execution_protocol_required') code = 'execution_protocol_required'
+      }
+      throw new GatewayRequestError(response.status, code)
+    }
     return response
   }
 }

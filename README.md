@@ -58,6 +58,4 @@ npm run pack:release
 - [架构说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/ARCHITECTURE.md)
 - [发布说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/RELEASE.md)
 
-0.2.4 不再默认限制任务必须在五分钟内完成。升级后的平台可以接收持久化任务回执、执行进度和脱敏诊断，详见[长任务与恢复说明](docs/USAGE.md#long-running-tasks-and-diagnostics-024)。
-
-0.2.6 将同一设备的任务串行执行；取消或超时后会等待工具退出和会话保存，再确认释放机器。重启后无法确认停止的旧任务，可在本机“平台连接状态”中检查并确认释放，详见[机器队列与恢复](docs/USAGE.md#machine-queue-and-recovery-026)。
+0.3.0 使用当前 V1 任务回执与机器租约协议。任务默认不限总时长，同一设备串行执行；取消后等待工具停止和会话保存。网络或平台注册暂时失败会自动重试，历史任务待确认时仍保持连接，详见[机器队列与恢复](docs/USAGE.md#machine-queue-and-recovery)及[连接恢复](docs/USAGE.md#connection-recovery)。

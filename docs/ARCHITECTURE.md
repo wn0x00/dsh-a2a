@@ -136,13 +136,18 @@ Agent handles until disposal. Remote payloads cannot override local execution
 settings or acquire additional tool permissions. Harness still enforces tool
 approval and sandbox policy.
 
-The negotiated `executionLeaseVersion: 1` protocol separates task business state
+Native durable profiles require `taskEventsVersion: 1` and
+`executionLeaseVersion: 1`; no older protocol fallback is attempted. This separates task business state
 from machine ownership. The current delivery ID identifies the lease. A final
 response includes a durable `drained` receipt only after tools and native session
 persistence finish; pending acknowledgement prevents another claim. Startup
 never replays received work. Unknown cleanup requires explicit local-owner
 confirmation through the strict Host RPC, with exact task/delivery IDs. Minimal
-old-grant recovery references never grant access to old task content.
+old-grant recovery references never grant access to old task content. Network
+failures during initial registration and later polling use the existing grant
+for background retries. The structured protocol-required response requests a
+new registration; same-protocol registration preserves the live runner. Updates
+are fenced while native execution or unacknowledged task reports remain.
 
 `src/session-index.ts` records the A2A context-to-Harness session mapping. Contexts
 are serialized and isolated by platform, profile and authorization scope. Native

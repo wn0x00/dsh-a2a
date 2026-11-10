@@ -424,8 +424,7 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
       storageDirectory: updateStorageDirectory(config, ctx.baseUrl),
       manager: () => pluginManager,
       canInstall: () => initialized && !disposed && !controlUpdate
-        && (!bridge || (bridge.status().activeTasks === 0
-          && !['starting', 'connecting', 'authorizing'].includes(bridge.status().phase))),
+        && (!bridge || bridge.canPauseForUpdate()),
       acquireInstallLock: async () => {
         if (disposed || updating || !initialized || controlUpdate) {
           throw new ConnectionActionError('busy')
