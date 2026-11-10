@@ -96,6 +96,7 @@ async function fixture(t, options = {}) {
     rejectRegistration: () => {
       rejectRegistration = true
     },
+    allowRegistration: () => { rejectRegistration = false },
     state: () => new URL(opened.at(-1)).searchParams.get('state'),
   }
 }
@@ -164,16 +165,18 @@ test('a refused replacement code cannot clear the old grant', async (t) => {
   assert.equal(f.bridge.status().phase, 'connected')
 })
 
-test('failed registration retains the new grant and never reports connected', async (t) => {
+test('temporary registration failure retains the new grant and reconnects after the authorization callback', async (t) => {
   const f = await fixture(t)
   await f.bridge.start()
   await f.bridge.reauthorize()
   f.rejectRegistration()
   await assert.rejects(f.bridge.completeAuthorization('new-code', f.state()))
   assert.equal((await f.store.get()).accessToken, 'new-access')
-  assert.equal(f.bridge.status().phase, 'error')
-  assert.equal(f.bridge.status().notice, 'registration_failed')
-  assert.equal(f.bridge.status().canConnect, true)
+  assert.equal(f.bridge.status().phase, 'reconnecting')
+  assert.equal(f.bridge.status().canConnect, false)
+  f.allowRegistration()
+  await untilConnected(f.bridge)
+  assert.equal(f.opened.length, 1)
 })
 
 test('a forged callback leaves the valid pending request intact', async (t) => {
@@ -396,18 +399,21 @@ test('revocation fences concurrent consent and updater handoff', async (t) => {
 })
 
 
-test('an unknown held lease permits reauthorization and becomes a minimal old-grant recovery without releasing the slot', async (t) => {
+test('reauthorization retries an interrupted new-scope inventory before exposing minimal old-grant recovery', async (t) => {
   const { mkdtemp, rm } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const { TaskJournal } = await import('../dist/task-journal.js')
   const directory = await mkdtemp(join(tmpdir(), 'dsh-reauthorize-held-'))
   const receipts = []
+  let replacementInventoryFailed = false
   const task = { id: 'old-task', contextId: 'old-context', status: { state: 'TASK_STATE_WORKING' },
     metadata: { executionLease: { deliveryId: 'old-task:message', phase: 'running', cancelRequested: false } } }
-  const f = await fixture(t, { taskStorageDirectory: directory, receipts, inventory: (authorization) =>
-    authorization === 'Bearer old-access' ? { tasks: [{ task, action: 'inspect' }], recoveries: [], next_after_id: null }
-      : { tasks: [], recoveries: [{ taskId: task.id, deliveryId: 'old-task:message', state: 'TASK_STATE_WORKING', requiresConfirmation: true }], next_after_id: null } })
+  const f = await fixture(t, { taskStorageDirectory: directory, receipts, inventory: (authorization) => {
+    if (authorization === 'Bearer old-access') return { tasks: [{ task, action: 'inspect' }], recoveries: [], next_after_id: null }
+    if (!replacementInventoryFailed) { replacementInventoryFailed = true; throw new TypeError('connection closed before inventory response') }
+    return { tasks: [], recoveries: [{ taskId: task.id, deliveryId: 'old-task:message', state: 'TASK_STATE_WORKING', requiresConfirmation: true }], next_after_id: null }
+  } })
   t.after(() => rm(directory, { recursive: true, force: true }))
   await f.bridge.start()
   assert.equal(f.bridge.status().recoveryTasks.length, 1)
@@ -416,7 +422,9 @@ test('an unknown held lease permits reauthorization and becomes a minimal old-gr
   await f.bridge.reauthorize()
   assert.equal(f.opened.length, 1)
   assert.equal(receipts.some((event) => event.execution), false)
-  await f.bridge.completeAuthorization('new-code', f.state())
+  await assert.rejects(f.bridge.completeAuthorization('new-code', f.state()))
+  assert.equal(f.bridge.status().phase, 'reconnecting')
+  await untilConnected(f.bridge)
   assert.equal(f.bridge.status().recoveryTasks.length, 1)
   assert.equal(receipts.some((event) => event.execution), false)
   const old = new TaskJournal(directory, 'old-session'); await old.load()
@@ -459,4 +467,37 @@ test('a known native writer keeps authorization and updates blocked after its ta
   assert.equal(f.bridge.status().canReauthorize, true)
   await f.bridge.reauthorize()
   assert.equal(f.opened.length, 1)
+})
+
+
+async function untilConnected(bridge) {
+  for (let i = 0; i < 150; i++) {
+    if (bridge.status().phase === 'connected') return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  assert.equal(bridge.status().phase, 'connected')
+}
+
+test('an explicit connect retains the old grant and automatically retries a temporary registration failure', async (t) => {
+  const f = await fixture(t)
+  f.rejectRegistration()
+  await assert.rejects(f.bridge.connect())
+  assert.equal(f.bridge.status().phase, 'reconnecting')
+  f.allowRegistration()
+  await untilConnected(f.bridge)
+  assert.equal(f.opened.length, 0)
+  assert.equal((await f.store.get()).accessToken, 'old-access')
+})
+
+test('declining reauthorization resumes the old connection through a temporary registration outage', async (t) => {
+  const f = await fixture(t)
+  await f.bridge.start()
+  await f.bridge.reauthorize()
+  f.rejectRegistration()
+  await f.bridge.cancelAuthorization(f.state())
+  assert.equal(f.bridge.status().phase, 'reconnecting')
+  f.allowRegistration()
+  await untilConnected(f.bridge)
+  assert.equal(f.opened.length, 1)
+  assert.equal((await f.store.get()).accessToken, 'old-access')
 })

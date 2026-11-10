@@ -1,5 +1,5 @@
-import { GatewayClient } from './gateway.js'
-import { OAuthClient, OAuthLoginRequiredError } from './pkce.js'
+import { GatewayClient, GatewayRequestError, GatewayTransportError } from './gateway.js'
+import { OAuthClient, OAuthLoginRequiredError, OAuthTransportError } from './pkce.js'
 import { TaskRunner } from './task-runner.js'
 import { ConnectionActionError, type ConnectionNotice, type ConnectionPhase, type ConnectionSnapshot } from './connection-state.js'
 import type { BridgeConfig, GatewayEvent, HarnessContext, HarnessSkill } from './types.js'
@@ -20,6 +20,8 @@ export class A2ABridge {
   private lastConnectedAt: number | null = null
   private lastContactAt: number | null = null
   private lastRecoveryCheckAt = 0
+  private needsRegistration = false
+  private nextRegistrationAt = 0
   private restoreAfterAuthorization = false
   private authorizationTimer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
@@ -96,6 +98,8 @@ export class A2ABridge {
       await this.registerConnection()
     } catch (error) {
       if (!(error instanceof OAuthLoginRequiredError)) {
+        if (this.disposed || this.stopController?.signal.aborted) return
+        if (this.loopPromise && this.retryableConnectionError(error)) return
         this.phase = 'error'
         throw error
       }
@@ -116,6 +120,7 @@ export class A2ABridge {
         await this.registerConnection()
       } catch (error) {
         if (!(error instanceof OAuthLoginRequiredError)) {
+          if (this.loopPromise && this.retryableConnectionError(error)) throw error
           this.phase = 'error'
           this.notice = 'registration_failed'
           throw error
@@ -177,7 +182,7 @@ export class A2ABridge {
       return
     }
     try { await this.registerConnection() } catch (error) {
-      this.phase = error instanceof OAuthLoginRequiredError ? 'authorization_required' : 'error'
+      if (!this.loopPromise) this.phase = error instanceof OAuthLoginRequiredError ? 'authorization_required' : 'error'
     }
   }
 
@@ -185,20 +190,46 @@ export class A2ABridge {
     if (this.loopPromise) return
     if (this.disposed) throw new ConnectionActionError('unavailable')
     this.phase = 'connecting'
+    this.stopController = new AbortController()
+    try { await this.registerDevice(this.stopController.signal) } catch (error) {
+      if (!this.disposed && !this.stopController?.signal.aborted && this.retryableConnectionError(error)) {
+        this.phase = 'reconnecting'
+        this.needsRegistration = true
+        this.nextRegistrationAt = Date.now() + this.registrationRetryDelay()
+        this.loopPromise = this.runLoop()
+      }
+      throw error
+    }
+    if (this.disposed || this.stopController?.signal.aborted) return
+    this.loopPromise = this.runLoop()
+  }
+
+  private registrationRetryDelay(): number {
+    return Math.max(this.config.reconnectDelayMs ?? this.config.pollIntervalMs ?? 3000, 1000)
+  }
+
+  private retryableConnectionError(error: unknown): boolean {
+    return error instanceof GatewayTransportError || error instanceof OAuthTransportError || (error instanceof GatewayRequestError
+      && (error.status >= 500 || [408, 429].includes(error.status) || error.code === 'execution_protocol_required'))
+  }
+
+  /** Refresh the existing grant's device handshake; never initiate OAuth here. */
+  private async registerDevice(signal?: AbortSignal): Promise<void> {
     this.authorized = await this.oauth.hasCredentials()
     try { await this.oauth.accessToken(); this.authorized = true }
     catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
-    try { const registration = await this.gateway.register(this.allowedSkills, this.config.taskStorageDirectory ? 1 : 0)
-      await this.runner.initialize(registration.taskEventsVersion, registration.executionLeaseVersion) }
-    catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
+    try {
+      const registration = await this.gateway.register(this.allowedSkills, this.config.taskStorageDirectory ? 1 : 0, signal)
+      if (this.config.taskStorageDirectory && (registration.taskEventsVersion !== 1 || registration.executionLeaseVersion !== 1)) {
+        throw new Error('The platform must support task events and machine execution protocol version 1')
+      }
+      await this.runner.initialize(registration.taskEventsVersion, registration.executionLeaseVersion)
+    } catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
+    signal?.throwIfAborted()
     if (this.disposed) return
+    this.needsRegistration = false
     this.phase = 'connected'
     this.lastConnectedAt = this.lastContactAt = this.lastRecoveryCheckAt = Date.now()
-    // Register for both pull and SSE transports.  Registration binds the stable
-    // device id to the OAuth subject before the first task claim; pull mode used
-    // to skip it and therefore required an out-of-band database row.
-    this.stopController = new AbortController()
-    this.loopPromise = this.runLoop()
   }
 
   /** Complete the callback received by the host's localhost redirect server. */
@@ -232,6 +263,7 @@ export class A2ABridge {
     // A successful token exchange alone is not a connected device. Registration
     // errors must reach the callback page, never start another consent silently.
     try { await this.registerConnection() } catch (error) {
+      if (this.loopPromise && this.retryableConnectionError(error)) throw error
       this.phase = error instanceof OAuthLoginRequiredError ? 'authorization_required' : 'error'
       this.notice = 'registration_failed'
       throw error
@@ -244,7 +276,7 @@ export class A2ABridge {
     this.gateway.updateIdentity(identity)
     if (!this.loopPromise) return
     try {
-      await this.gateway.register(this.allowedSkills, this.config.taskStorageDirectory ? 1 : 0)
+      await this.registerDevice(this.stopController?.signal)
     } catch (error) {
       if (error instanceof OAuthLoginRequiredError) {
         await this.stopPolling()
@@ -298,13 +330,15 @@ export class A2ABridge {
     try { await this.connecting } finally { this.connecting = undefined }
   }
 
-  /** Stop accepting work only when idle; preserve credentials for restart. */
+  canPauseForUpdate(): boolean {
+    return !this.disposed && !this.connecting && !this.completing && this.runner.localTaskCount() === 0
+      && !this.runner.hasPendingReports() && !['starting', 'connecting', 'authorizing', 'revoking'].includes(this.phase)
+  }
+
+  /** Stop accepting work only when idle and reports are acknowledged. */
   async pauseForUpdate(): Promise<void> {
     if (this.disposed) throw new ConnectionActionError('unavailable')
-    if (this.connecting || this.completing || this.runner.localTaskCount()
-      || ['starting', 'connecting', 'authorizing'].includes(this.phase)) {
-      throw new ConnectionActionError('busy')
-    }
+    if (!this.canPauseForUpdate()) throw new ConnectionActionError('busy')
     // No await between the idle check and stopping the poll carrier: a task
     // cannot enter dispatch after this check while an update acquires its lock.
     this.phase = 'stopped'
@@ -338,6 +372,12 @@ export class A2ABridge {
     )
     while (!stopController.signal.aborted) {
       try {
+        if (this.needsRegistration) {
+          await this.sleep(Math.max(0, this.nextRegistrationAt - Date.now()), stopController.signal)
+          if (stopController.signal.aborted) break
+          this.nextRegistrationAt = Date.now() + this.registrationRetryDelay()
+          await this.registerDevice(stopController.signal)
+        }
         void this.runner.flushReports().catch(() => {
           this.log('error', 'Unable to flush the local task journal')
         })
@@ -397,11 +437,21 @@ export class A2ABridge {
           this.loopPromise = undefined
           this.stopController = undefined
           this.authorized = false
-        this.phase = 'authorization_required'
+          this.phase = 'authorization_required'
           this.log('info', 'Device authorization expired or was revoked; connect again from Harness Settings → A2A')
           return
         }
         if (!stopController.signal.aborted) {
+          if (error instanceof GatewayRequestError && error.code === 'execution_protocol_required') {
+            this.needsRegistration = true
+            this.nextRegistrationAt = Math.max(this.nextRegistrationAt, Date.now() + this.registrationRetryDelay())
+          } else if (this.needsRegistration && !this.retryableConnectionError(error)) {
+            this.phase = 'error'
+            this.loopPromise = undefined
+            this.stopController = undefined
+            this.log('error', 'Device registration needs attention')
+            return
+          }
           this.phase = 'reconnecting'
           this.log('warn', 'A2A gateway connection closed; reconnecting', {
             error: error instanceof Error ? error.message : String(error),
@@ -422,12 +472,11 @@ export class A2ABridge {
   }
 
   private async sleep(milliseconds: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, milliseconds)
-      signal.addEventListener('abort', () => {
-        clearTimeout(timer)
-        resolve()
-      }, { once: true })
+      const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve() }
+      const timer = setTimeout(finish, milliseconds)
+      signal.addEventListener('abort', finish, { once: true })
     })
   }
 

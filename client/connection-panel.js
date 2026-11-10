@@ -114,7 +114,8 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
     const [failure, setFailure] = React.useState(null)
     const [readAt, setReadAt] = React.useState(null)
     const [reading, setReading] = React.useState(false)
-    const [busy, setBusy] = React.useState(false)
+    const [pendingAction, setPendingAction] = React.useState(null)
+    const busy = pendingAction !== null
     const [confirm, setConfirm] = React.useState(false)
     const [actionError, setActionError] = React.useState(false)
     const live = React.useRef(false)
@@ -133,7 +134,7 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
       setSnapshot(null)
       setReadAt(null)
       setFailure(null)
-      setBusy(false)
+      setPendingAction(null)
       setConfirm(false)
       setActionError(false)
       acting.current = false
@@ -213,7 +214,7 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
       )
         return
       acting.current = true
-      setBusy(true)
+      setPendingAction(action)
       setConfirm(false)
       setActionError(false)
       reader.current?.invalidate()
@@ -234,7 +235,7 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
           await refresh()
           if (current()) {
             acting.current = false
-            setBusy(false)
+            setPendingAction(null)
           }
         }
       }
@@ -252,7 +253,7 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
         : changed
           ? '正在自动保存配置，完成后可操作。'
           : busy
-            ? '正在处理连接请求，请稍候。'
+            ? pendingAction === 'confirmStopped' ? '正在确认任务停止并释放机器…' : '正在处理连接请求，请稍候。'
             : !snapshot?.canConnect &&
                 ['authorization_required', 'disconnected', 'error'].includes(
                   snapshot?.phase,

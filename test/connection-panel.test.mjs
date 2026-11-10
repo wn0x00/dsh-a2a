@@ -429,3 +429,22 @@ test('a busy native writer prevents the machine recovery confirmation action', a
     recoveryTasks: [{ taskId: 'busy', deliveryId: 'message', canRelease: false }] } })))
   assert.equal(page.button('确认已停止并释放机器').props.disabled, true)
 })
+
+
+test('a pending machine confirmation identifies the action without presenting it as a connection request', async (t) => {
+  const pending = deferred()
+  let tasks = [{ taskId: 'old-task', deliveryId: 'old-message', canRelease: true }]
+  const current = () => ({ ...snapshot, phase: 'connected', recoveryTasks: tasks })
+  const source = { ...connection(async () => ({ ok: true, value: current() })),
+    confirmStopped: async () => { await pending.promise; tasks = []; return { ok: true, value: current() } },
+  }
+  const page = await mountPanel(t, source)
+  await act(async () => { page.button('确认已停止并释放机器').props.onClick() })
+  let operation
+  await act(async () => { operation = page.button('已检查停止，确认释放').props.onClick() })
+  assert.match(page.text(), /正在确认任务停止并释放机器/)
+  assert.doesNotMatch(page.text(), /正在处理连接请求/)
+  assert.ok(page.button('确认已停止并释放机器').props.disabled)
+  await act(async () => { pending.resolve(); await operation })
+  assert.equal(page.button('确认已停止并释放机器'), undefined)
+})

@@ -22,6 +22,18 @@ async function challenge(verifier: string): Promise<string> {
   return base64Url(new Uint8Array(digest))
 }
 
+export class OAuthTransportError extends Error {}
+
+async function readOAuthJson(response: Response, allowMalformed = false): Promise<unknown> {
+  try { return await response.json() } catch (error) {
+    if (error instanceof TypeError || (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name))) {
+      throw new OAuthTransportError('OAuth response did not complete')
+    }
+    if (allowMalformed && error instanceof SyntaxError) return {}
+    throw error
+  }
+}
+
 export class MemoryTokenStore implements TokenStore {
   private tokens: TokenSet | undefined
 
@@ -120,7 +132,7 @@ export class OAuthClient {
         body: JSON.stringify({ ...parameters, device_id: device.id, device_name: device.name, platform: device.platform ?? 'windows' }),
       })
       if (!response.ok) throw new Error(`Platform authorization request failed (${response.status})`)
-      const payload = await response.json() as { authorization_url?: unknown; expires_in?: unknown }
+      const payload = await readOAuthJson(response) as { authorization_url?: unknown; expires_in?: unknown }
       if (typeof payload.authorization_url !== 'string') throw new Error('Platform did not return an authorization URL')
       url = new URL(payload.authorization_url)
       if (url.origin !== new URL(this.config.authorizationEndpoint).origin || url.pathname !== new URL(this.config.authorizationEndpoint).pathname) {
@@ -267,20 +279,23 @@ export class OAuthClient {
   }
 
   private async exchange(body: URLSearchParams, clearRejectedCredentials = true): Promise<TokenSet> {
-    const response = await this.fetchImpl(this.config.tokenEndpoint, {
+    let response: Response
+    try { response = await this.fetchImpl(this.config.tokenEndpoint, {
       method: 'POST',
+      signal: AbortSignal.timeout(15_000),
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,
-    })
+    }) } catch { throw new OAuthTransportError('OAuth token request did not complete') }
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { error?: string }
+      const payload = await readOAuthJson(response, true) as { error?: string }
       if (response.status === 401 || payload.error === 'invalid_grant') {
         if (clearRejectedCredentials) await this.store.clear()
         throw new OAuthLoginRequiredError()
       }
+      if (response.status >= 500 || [408, 429].includes(response.status)) throw new OAuthTransportError(`OAuth token exchange failed (${response.status})`)
       throw new Error(`OAuth token exchange failed (${response.status})`)
     }
-    const payload = (await response.json()) as TokenResponse
+    const payload = (await readOAuthJson(response)) as TokenResponse
     if (typeof payload.access_token !== 'string') {
       throw new Error('OAuth token response has no access_token')
     }

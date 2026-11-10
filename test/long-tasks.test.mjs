@@ -249,7 +249,7 @@ test('a slow diagnostic upload cannot block cancellation polling', async (t) => 
     oauth: { clientId: 'test', authorizationEndpoint: 'https://auth.example', tokenEndpoint: 'https://auth.example/token', redirectUri: 'http://127.0.0.1/callback', scopes: [], tokenStore: store, openAuthorizationUrl() {} },
     fetch: async (url, init) => {
       const path = new URL(url).pathname
-      if (path.endsWith('/register')) return Response.json({ deviceId: 'device', taskEventsVersion: 1 })
+      if (path.endsWith('/register')) return Response.json({ deviceId: 'device', taskEventsVersion: 1, executionLeaseVersion: 1 })
       if (path.endsWith('/tasks/active')) return Response.json({ tasks: [], next_after_id: null })
       if (path.endsWith('/events')) {
         const event = JSON.parse(init.body)
@@ -258,7 +258,8 @@ test('a slow diagnostic upload cannot block cancellation polling', async (t) => 
       }
       if (path === '/a2a') {
         reads++
-        return Response.json({ result: { id: 'task-one', contextId: 'context-one', status: { state: executionStarted ? 'TASK_STATE_CANCELED' : 'TASK_STATE_WORKING' } } })
+        return Response.json({ result: { id: 'task-one', contextId: 'context-one', status: { state: 'TASK_STATE_WORKING' },
+          metadata: { executionLease: { deliveryId: 'task-one:message', phase: 'running', cancelRequested: executionStarted } } } })
       }
       if (delivered) return new Response(null, { status: 204 })
       delivered = true

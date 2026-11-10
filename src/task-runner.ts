@@ -98,11 +98,14 @@ export class TaskRunner {
     this.executionLeases = executionLeaseVersion >= 1
     const scope = await this.sessionScope()
     if (scope === this.journalScope && this.initialized) return
-    if (this.localTaskCount()) throw new Error('Cannot switch task authorization while work is active')
-    this.journal = new TaskJournal(this.options.storageDirectory, scope)
-    await this.journal.load()
-    this.journalScope = scope
-    this.deliveryIds.clear()
+    if (scope !== this.journalScope) {
+      if (this.localTaskCount()) throw new Error('Cannot switch task authorization while work is active')
+      this.initialized = false
+      this.journal = new TaskJournal(this.options.storageDirectory, scope)
+      await this.journal.load()
+      this.journalScope = scope
+      this.deliveryIds.clear()
+    }
     await this.reconcile()
     this.initialized = true
   }
@@ -339,6 +342,8 @@ export class TaskRunner {
   }
 
   cancel(taskId: string): void { this.active.get(taskId)?.abort() }
+
+  hasPendingReports(): boolean { return this.journal?.list().some((row) => row.pending.length > 0) ?? false }
 
   localTaskCount(): number {
     // A failed drain may leave a known native writer after its controller exits.
