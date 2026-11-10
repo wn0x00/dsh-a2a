@@ -130,11 +130,19 @@ tasks as a platform caller.
 
 ## Native execution and persistence
 
-`src/task-runner.ts` dispatches received work to the native adapter. The adapter
+`src/task-runner.ts` persists queued receipts and serializes all received work on the device before dispatching to the native adapter. The adapter
 uses the selected Harness Agent preset, model and workspace and retains native
 Agent handles until disposal. Remote payloads cannot override local execution
 settings or acquire additional tool permissions. Harness still enforces tool
 approval and sandbox policy.
+
+The negotiated `executionLeaseVersion: 1` protocol separates task business state
+from machine ownership. The current delivery ID identifies the lease. A final
+response includes a durable `drained` receipt only after tools and native session
+persistence finish; pending acknowledgement prevents another claim. Startup
+never replays received work. Unknown cleanup requires explicit local-owner
+confirmation through the strict Host RPC, with exact task/delivery IDs. Minimal
+old-grant recovery references never grant access to old task content.
 
 `src/session-index.ts` records the A2A context-to-Harness session mapping. Contexts
 are serialized and isolated by platform, profile and authorization scope. Native

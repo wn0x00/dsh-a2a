@@ -57,7 +57,7 @@ test('the real Cordis service derives the caller from its invocation, never meth
     const service = ctx.extend({ invocation }).get('dshA2a')
     assert.throws(() => service.status(), /local Host owner/)
     assert.throws(() => service.updateStatus(), /local Host owner/)
-    for (const method of ['connect', 'reauthorize', 'cancelAuthorization', 'revokeAuthorization', 'checkUpdate', 'installUpdate']) {
+    for (const method of ['connect', 'reauthorize', 'cancelAuthorization', 'revokeAuthorization', 'confirmStopped', 'checkUpdate', 'installUpdate']) {
       await assert.rejects(
         service[method]({ principal: { kind: 'owner' } }),
         /local Host owner/,
@@ -69,6 +69,7 @@ test('the real Cordis service derives the caller from its invocation, never meth
   assert.deepEqual(methods.map((entry) => entry.method).sort(), [
     'cancelAuthorization',
     'checkUpdate',
+    'confirmStopped',
     'connect',
     'installUpdate',
     'reauthorize',
@@ -101,7 +102,7 @@ test('RPC failures redact arbitrary upstream errors and strict results reject se
   for (const descriptor of contract.descriptors) {
     assert.equal(descriptor.result.mode, 'strict')
     assert.deepEqual(descriptor.parameters.map((parameter) => parameter.wire),
-      descriptor.method === 'installUpdate' ? ['expectedVersion'] : [])
+      descriptor.method === 'installUpdate' ? ['expectedVersion'] : descriptor.method === 'confirmStopped' ? ['taskId', 'deliveryId'] : [])
     const expected = descriptor.result.typeSymbol.endsWith('#PluginUpdateSnapshot') ? updateSnapshot : snapshot
     assert.deepEqual(descriptor.result.create().parse(expected), expected)
     assert.deepEqual(descriptor.result.encode(expected), expected)

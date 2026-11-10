@@ -238,6 +238,8 @@ async function* readSse(
 }
 
 export class GatewayClient {
+  private recovered: import('./types.js').DeviceRecovery[] = []
+  recoveryTasks(): import('./types.js').DeviceRecovery[] { return structuredClone(this.recovered) }
   private registration?: DeviceRegistration
   private readonly fetchImpl: FetchImpl
   private readonly paths: Required<NonNullable<BridgeConfig['gatewayPaths']>>
@@ -272,7 +274,7 @@ export class GatewayClient {
     Object.assign(this.device, identity)
   }
 
-  async register(allowedSkills: string[] = []): Promise<DeviceRegistration> {
+  async register(allowedSkills: string[] = [], executionLeaseVersion = 0): Promise<DeviceRegistration> {
     const response = await this.request(this.path(this.paths.register), {
       method: 'POST',
       body: JSON.stringify({
@@ -282,12 +284,14 @@ export class GatewayClient {
         platform: this.device.platform ?? 'windows',
         capabilities: this.device.capabilities,
         allowedSkills,
+        ...(executionLeaseVersion ? { executionLeaseVersion } : {}),
       }),
     })
     const payload = asObject(await response.json())
     if (typeof payload.deviceId !== 'string') throw new Error('Device registration has no deviceId')
     const registration: DeviceRegistration = {
       deviceId: payload.deviceId,
+      ...(typeof payload.executionLeaseVersion === 'number' ? { executionLeaseVersion: payload.executionLeaseVersion } : {}),
       ...(typeof payload.taskEventsVersion === 'number' ? { taskEventsVersion: payload.taskEventsVersion } : {}),
       ...(typeof payload.connectionToken === 'string' ? { connectionToken: payload.connectionToken } : {}),
       ...(typeof payload.expiresAt === 'string' ? { expiresAt: payload.expiresAt } : {}),
@@ -341,6 +345,7 @@ export class GatewayClient {
 
   async activeTasks(): Promise<A2ATask[]> {
     const tasks: A2ATask[] = []
+    const recoveries: import('./types.js').DeviceRecovery[] = []
     let after = ''
     do {
       const query = new URLSearchParams({ limit: '100', ...(after ? { after_id: after } : {}) })
@@ -348,16 +353,23 @@ export class GatewayClient {
       const page = asObject(await response.json())
       if (!Array.isArray(page.tasks)) throw new Error('Invalid task reconciliation response')
       for (const item of page.tasks) tasks.push(asTask(asObject(item).task))
+      for (const item of Array.isArray(page.recoveries) ? page.recoveries : []) {
+        const value = asObject(item)
+        if (typeof value.taskId !== 'string' || typeof value.deliveryId !== 'string' || value.requiresConfirmation !== true) throw new Error('Invalid machine recovery response')
+        recoveries.push({ taskId: value.taskId, deliveryId: value.deliveryId, state: value.state as A2ATaskState, requiresConfirmation: true })
+      }
       const next = typeof page.next_after_id === 'string' ? page.next_after_id : ''
       if (next && next === after) throw new Error('Task reconciliation cursor did not advance')
       after = next
     } while (after)
+    this.recovered = recoveries
     return tasks
   }
 
   async taskEvent(taskId: string, event: TaskEvent): Promise<void> {
     const body: Record<string, unknown> = {
       ...(event.state ? { state: event.state } : {}),
+      ...(event.execution ? { execution: event.execution } : {}),
       ...(event.event_id ? { event_id: event.event_id } : {}),
       ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),
       deviceId: this.device.id,

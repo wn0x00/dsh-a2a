@@ -21,6 +21,10 @@ export class HarnessAuthRequiredError extends Error {
   override name = 'HarnessAuthRequiredError'
 }
 
+export class HarnessDrainUnconfirmedError extends Error {
+  override name = 'HarnessDrainUnconfirmedError'
+}
+
 export class HarnessInputRequiredError extends Error {
   override name = 'HarnessInputRequiredError'
 }
@@ -53,6 +57,7 @@ export type TaskRunnerOptions = {
   storageDirectory?: string
   getTask?: (taskId: string) => Promise<A2ATask>
   activeTasks?: () => Promise<A2ATask[]>
+  recoveries?: () => import('./types.js').DeviceRecovery[]
   heartbeatMs?: number
 }
 
@@ -64,6 +69,9 @@ export class TaskRunner {
   private readonly flushing = new Map<string, Promise<void>>()
   private initialized = false
   private flushingReports: Promise<void> | undefined
+  private executionLeases = false
+  private queueTail: Promise<void> = Promise.resolve()
+  private readonly releaseWaiters = new Set<() => void>()
 
   private readonly active = new Map<string, AbortController>()
   private readonly pending = new Set<Promise<void>>()
@@ -82,8 +90,12 @@ export class TaskRunner {
     private readonly options: TaskRunnerOptions = {},
   ) {}
 
-  async initialize(taskEventsVersion = 0): Promise<void> {
+  async initialize(taskEventsVersion = 0, executionLeaseVersion = 0): Promise<void> {
+    if (executionLeaseVersion >= 1 && (taskEventsVersion < 1 || !this.options.storageDirectory || !this.sessionScope)) {
+      throw new Error('Machine lease execution requires durable task-event storage')
+    }
     if (taskEventsVersion < 1 || !this.options.storageDirectory || !this.sessionScope) return
+    this.executionLeases = executionLeaseVersion >= 1
     const scope = await this.sessionScope()
     if (scope === this.journalScope && this.initialized) return
     if (this.active.size) throw new Error('Cannot switch task authorization while work is active')
@@ -95,33 +107,104 @@ export class TaskRunner {
     this.initialized = true
   }
 
-  /** Reconcile old receipts, never replay an interrupted local side effect. */
+  private leaseOf(task: A2ATask): { deliveryId: string; phase: string } | undefined {
+    const lease = task.metadata?.executionLease as { deliveryId?: unknown; phase?: unknown } | undefined
+    return lease && typeof lease.deliveryId === 'string' && typeof lease.phase === 'string'
+      ? { deliveryId: lease.deliveryId, phase: lease.phase } : undefined
+  }
+
+  /** Never replay a received task across restart, or infer tool cleanup from a terminal state. */
   private async reconcile(): Promise<void> {
     if (!this.journal || !this.options.getTask) return
     void this.flushReports().catch(() => undefined)
     for (const row of this.journal.list()) {
-      if (row.phase !== 'running') continue
+      if (row.previous_grant || row.execution?.phase === 'drained' || row.execution?.phase === 'released') continue
+      if (row.phase === 'finished' && !row.execution) continue
       const remote = await this.options.getTask(row.task_id)
+      const lease = this.executionLeases ? this.leaseOf(remote) : undefined
+      if (lease) {
+        if (!row.execution || row.execution.delivery_id !== lease.deliveryId) await this.journal.requireRecovery(row.task_id, lease.deliveryId)
+        if (lease.phase === 'released') { await this.journal.releaseExecution(row.task_id, lease.deliveryId); continue }
+        // A restored idle session cannot prove a prior process's external
+        // tools stopped. Only a matching receipt that never entered execution
+        // can be released automatically after restart.
+        const drained = row.phase === 'queued' && row.execution?.delivery_id === lease.deliveryId && !row.recovery_pending
+        if (!drained) await this.journal.requireRecovery(row.task_id, lease.deliveryId)
+        await this.queueEvent(row.task_id, {
+          ...(!RESPONSE_STATES.has(remote.state) ? { state: 'TASK_STATE_FAILED' as const,
+            message: 'The client restarted. Execution has not been replayed; inspect the local session before continuing.' } : {}),
+          ...(drained ? { execution: { delivery_id: lease.deliveryId, phase: 'drained' as const } } : {}),
+          diagnostics: { kind: 'recovery', stage: drained ? 'interrupted' : 'recovery_required', error_code: 'client_restarted',
+            client_version: PLUGIN_VERSION, executor: row.diagnostics.at(-1)?.executor ?? 'unknown',
+            ...(row.local_session_id ? { local_session_id: row.local_session_id } : {}), changes: row.phase === 'queued' ? 'none' : 'unknown' },
+        })
+        continue
+      }
       if (RESPONSE_STATES.has(remote.state)) { await this.journal.markFinished(row.task_id); continue }
-      await this.queueEvent(row.task_id, {
-        state: 'TASK_STATE_FAILED',
+      await this.queueEvent(row.task_id, { state: 'TASK_STATE_FAILED',
         message: 'The client restarted during this task. Execution was not replayed; inspect the saved local session before continuing.',
         diagnostics: { kind: 'recovery', stage: 'interrupted', error_code: 'client_restarted',
           client_version: PLUGIN_VERSION, executor: row.diagnostics.at(-1)?.executor ?? 'unknown',
-          ...(row.local_session_id ? { local_session_id: row.local_session_id } : {}),
-          changes: 'unknown' },
-      })
+          ...(row.local_session_id ? { local_session_id: row.local_session_id } : {}), changes: 'unknown' } })
     }
-    // A device may have upgraded without a prior ledger. Surface that gap; do
-    // not claim the task failed or launch it again from an untrusted snapshot.
     for (const task of await this.options.activeTasks?.() ?? []) {
-      if (this.journal.get(task.id)) continue
-      await this.journal.begin(task.id, task.contextId, 'inspect:' + task.id)
-      await this.queueEvent(task.id, { diagnostics: { kind: 'recovery', stage: 'untracked',
-        error_code: 'local_record_missing', changes: 'unknown', client_version: PLUGIN_VERSION,
-        summary: 'This client has no execution record for the task. Inspect the existing executor; it has not been replayed.' } })
+      const existing = this.journal.get(task.id)
+      const lease = this.executionLeases ? this.leaseOf(task) : undefined
+      if (existing && (!lease || lease.phase === 'released' || existing.execution?.delivery_id === lease.deliveryId)) continue
+      if (!existing) await this.journal.begin(task.id, task.contextId, 'inspect:' + task.id)
+      if (lease && lease.phase !== 'released') await this.journal.requireRecovery(task.id, lease.deliveryId)
+      await this.queueEvent(task.id, { diagnostics: { kind: 'recovery', stage: lease ? 'recovery_required' : 'untracked',
+        error_code: existing ? 'legacy_execution_unconfirmed' : 'local_record_missing', changes: 'unknown', client_version: PLUGIN_VERSION,
+        summary: existing ? 'This older receipt does not confirm that native tools stopped. Inspect the session before releasing the machine.'
+          : 'This client has no execution record for the task. Inspect the existing executor; it has not been replayed.' } })
       await this.journal.markFinished(task.id)
     }
+    for (const recovery of this.executionLeases ? this.options.recoveries?.() ?? [] : []) {
+      if (this.journal.get(recovery.taskId)?.execution?.phase === 'drained') continue
+      if (!this.journal.get(recovery.taskId)) await this.journal.begin(recovery.taskId, '', 'inspect:' + recovery.taskId)
+      await this.journal.requireRecovery(recovery.taskId, recovery.deliveryId, true)
+      await this.journal.markFinished(recovery.taskId)
+    }
+  }
+
+  recoveryTasks(): Array<{ taskId: string; deliveryId: string; localSessionId?: string; canRelease: boolean }> {
+    return this.journal?.list().filter((row) => row.recovery_pending && row.execution?.phase !== 'released').map((row) => ({
+      taskId: row.task_id, deliveryId: row.execution!.delivery_id,
+      ...(row.local_session_id ? { localSessionId: row.local_session_id } : {}),
+      canRelease: this.active.size === 0 && (!row.local_session_id || !this.harness.sessionBusy?.(row.local_session_id)),
+    })) ?? []
+  }
+
+  /** Owner-only UI confirmation; this records an attestation, never pretends to stop a process. */
+  async confirmStopped(taskId: string, deliveryId: string): Promise<void> {
+    const candidate = this.recoveryTasks().find((row) => row.taskId === taskId && row.deliveryId === deliveryId)
+    if (!candidate?.canRelease || !this.journal || !this.options.getTask) throw new Error('This task cannot be released while local execution is active')
+    if (this.journal.get(taskId)?.previous_grant) {
+      await this.options.activeTasks?.()
+      if (!this.options.recoveries?.().some((row) => row.taskId === taskId && row.deliveryId === deliveryId)) throw new Error('Recovery authorization changed; refresh before confirming')
+      if (!this.journal.get(taskId)?.pending.some((event) => event.execution?.delivery_id === deliveryId)) {
+        await this.queueEvent(taskId, { execution: { delivery_id: deliveryId, phase: 'drained', confirmed_stopped: true } })
+      }
+      await this.flushTask(taskId)
+      if (this.journal.get(taskId)?.execution?.phase !== 'released') throw new Error('Machine release is pending platform acknowledgement')
+      return
+    }
+    const remote = await this.options.getTask(taskId)
+    const lease = this.leaseOf(remote)
+    if (lease?.deliveryId !== deliveryId) throw new Error('The execution lease has changed; refresh before confirming')
+    if (lease.phase === 'released') { await this.journal.releaseExecution(taskId, deliveryId); return }
+    if (candidate.localSessionId && this.harness.sessionBusy?.(candidate.localSessionId)) throw new Error('The native session is still running')
+    if (!this.journal.get(taskId)?.pending.some((event) => event.execution?.delivery_id === deliveryId)) {
+      await this.queueEvent(taskId, {
+        ...(!RESPONSE_STATES.has(remote.state) ? { state: 'TASK_STATE_FAILED' as const } : {}),
+        execution: { delivery_id: deliveryId, phase: 'drained' },
+        diagnostics: { kind: 'recovery', stage: 'owner_confirmed_stopped', client_version: PLUGIN_VERSION,
+          summary: 'The local owner confirmed that the old task and tools have stopped.', changes: 'unknown',
+          ...(candidate.localSessionId ? { local_session_id: candidate.localSessionId } : {}) },
+      })
+    }
+    await this.flushTask(taskId)
+    if (this.journal.get(taskId)?.execution?.phase !== 'released') throw new Error('Machine release is pending platform acknowledgement; retry after reconnecting')
   }
 
   async flushReports(): Promise<void> {
@@ -154,8 +237,15 @@ export class TaskRunner {
             let remote: A2ATask | undefined
             try { remote = await this.options.getTask(taskId) } catch { /* Leave unknown outcomes pending. */ }
             if (remote && ['TASK_STATE_COMPLETED', 'TASK_STATE_CANCELED', 'TASK_STATE_FAILED', 'TASK_STATE_REJECTED'].includes(remote.state)
-                && event.state && event.state !== remote.state) {
+                && event.state && event.state !== remote.state
+                && (!event.execution || this.leaseOf(remote)?.deliveryId === event.execution.delivery_id)) {
               await journal.reject(taskId, event.event_id!, 'Task is already ' + remote.state + '; stale transition was not replayed')
+              if (event.execution) {
+                // Preserve the rejected event unchanged. The executor already
+                // drained; acknowledge that fact independently of the winning
+                // business outcome under a fresh idempotency key.
+                await journal.enqueue(taskId, { event_id: randomUUID(), execution: event.execution })
+              }
               this.log('warn', 'A stale task transition was retained locally after reconciliation', { taskId, state: remote.state })
               continue
             }
@@ -164,6 +254,7 @@ export class TaskRunner {
           return
         }
         await journal.acknowledge(taskId, event.event_id!)
+        for (const wake of this.releaseWaiters) wake()
       }
     })()
     this.flushing.set(taskId, work)
@@ -196,116 +287,131 @@ export class TaskRunner {
   }
 
   async handle(event: GatewayEvent): Promise<void> {
-    if (event.type === 'cancel') {
-      this.cancel(event.taskId)
-      return
-    }
+    if (event.type === 'cancel') { this.cancel(event.taskId); return }
     if (event.type !== 'task') return
     const { envelope } = event
-    if (this.deliveryIds.has(envelope.deliveryId)) return
+    if (this.deliveryIds.has(envelope.deliveryId) || this.active.has(envelope.task.id)) return
     this.deliveryIds.add(envelope.deliveryId)
     this.deliveryOrder.push(envelope.deliveryId)
     if (this.deliveryOrder.length > 4096) {
       const expired = this.deliveryOrder.shift()
       if (expired) this.deliveryIds.delete(expired)
     }
-    if (this.journal && !await this.journal.begin(envelope.task.id, envelope.task.contextId, envelope.deliveryId)) {
-      await this.flushReports()
-      return
-    }
-    const work = this.start(envelope)
+    // Reserve capacity synchronously, before persistence or HTTP can yield.
+    const controller = new AbortController()
+    this.active.set(envelope.task.id, controller)
+    const prior = this.queueTail
+    let releaseQueue!: () => void
+    this.queueTail = new Promise<void>((resolve) => { releaseQueue = resolve })
+    const work = (async () => {
+      if (this.journal && !await this.journal.begin(envelope.task.id, envelope.task.contextId, envelope.deliveryId,
+        { queued: true, leased: this.executionLeases })) { await this.flushReports(); return }
+      if (this.journal) await this.queueEvent(envelope.task.id, { diagnostics: { kind: 'progress', stage: 'queued', client_version: PLUGIN_VERSION } })
+      await prior
+      try {
+        await this.waitForReleasedCapacity(envelope.deliveryId, controller.signal)
+        await this.start(envelope, controller)
+      } catch (error) {
+        // A queued cancellation has never entered the executor.
+        await this.finishDelivery(envelope, { state: controller.signal.aborted ? 'TASK_STATE_CANCELED' : 'TASK_STATE_FAILED',
+          message: errorMessage(error), diagnostics: { kind: 'result', stage: 'queued_cancelled', changes: 'none' } })
+      }
+    })().finally(() => { this.active.delete(envelope.task.id); releaseQueue() })
     this.pending.add(work)
     try { await work } finally { this.pending.delete(work) }
   }
 
-  cancel(taskId: string): void {
-    this.active.get(taskId)?.abort()
+  private async waitForReleasedCapacity(deliveryId: string, signal: AbortSignal): Promise<void> {
+    while (this.journal?.list().some((row) => row.execution && row.execution.delivery_id !== deliveryId && row.execution.phase !== 'released' && (row.phase !== 'queued' || row.recovery_pending))) {
+      signal.throwIfAborted()
+      await new Promise<void>((resolve) => {
+        const wake = () => { this.releaseWaiters.delete(wake); signal.removeEventListener('abort', wake); resolve() }
+        this.releaseWaiters.add(wake)
+        signal.addEventListener('abort', wake, { once: true })
+      })
+    }
+    signal.throwIfAborted()
+  }
+
+  cancel(taskId: string): void { this.active.get(taskId)?.abort() }
+
+  localTaskCount(): number { return this.active.size }
+
+  hasCapacity(): boolean {
+    return this.active.size === 0 && !this.journal?.list().some((row) => row.execution && row.execution.phase !== 'released')
   }
 
   activeTaskIds(): string[] {
-    return [...this.active.keys()]
+    return [...new Set([...this.active.keys(), ...(this.journal?.list().filter((row) => row.execution && row.execution.phase !== 'released').map((row) => row.task_id) ?? [])])]
+  }
+
+  private async finishDelivery(envelope: A2ATaskEnvelope, event: TaskEvent): Promise<void> {
+    const payload: TaskEvent = { ...event,
+      ...(this.executionLeases ? { execution: { delivery_id: envelope.deliveryId, phase: 'drained' as const } } : {}),
+    }
+    if (!this.journal) delete payload.diagnostics
+    await this.safeReport(envelope.task.id, payload)
   }
 
   async stop(): Promise<void> {
     for (const controller of this.active.values()) controller.abort()
     await Promise.allSettled([...this.pending])
-    // A timeout reports failure promptly, but the native Agent can still be
-    // cancelling tools and flushing session history. Keep the profile locked
-    // until execution drains; plugin cleanup then closes its retained handles.
+    // Keep profile ownership until native tools and session persistence drain.
+    // A timeout requests cancellation; the final response is sent only after
+    // that cleanup. Plugin disposal then closes retained session handles.
     await Promise.allSettled([...this.executions])
     this.active.clear()
     await this.flushReports()
   }
 
-  private async start(envelope: A2ATaskEnvelope): Promise<void> {
+  private async start(envelope: A2ATaskEnvelope, controller: AbortController): Promise<void> {
     const { task } = envelope
-    if (this.active.has(task.id)) return
-    if (envelope.timeoutSeconds !== undefined && (!Number.isFinite(envelope.timeoutSeconds)
-        || envelope.timeoutSeconds < 1 || envelope.timeoutSeconds > 604800)) {
-      await this.safeReport(task.id, { state: 'TASK_STATE_REJECTED', message: 'Task deadline must be between 1 and 604800 seconds' })
-      return
-    }
     const nativeMessage = envelope.executionMode === 'a2a-message'
-    const skill = nativeMessage
-      ? this.messageExecutor
-      : Object.hasOwn(this.skills, envelope.skillId) ? this.skills[envelope.skillId] : undefined
-    if (!skill) {
-      await this.safeReport(task.id, {
-        state: 'TASK_STATE_REJECTED',
-        message: nativeMessage
-          ? 'This client does not support A2A message execution'
-          : `Skill is not allowed on this device: ${envelope.skillId}`,
-      })
-      return
-    }
-    const requested = envelope.requestedCapabilities ?? []
-    const unsupported = requested.filter((capability) => !this.deviceCapabilities.includes(capability))
-    if (unsupported.length) {
-      await this.safeReport(task.id, {
-        state: 'TASK_STATE_REJECTED',
-        message: `Device lacks requested capabilities: ${unsupported.join(', ')}`,
-      })
-      return
-    }
-
-    const controller = new AbortController()
-    this.active.set(task.id, controller)
     const started = Date.now()
     let latest: TaskDiagnostic = { kind: 'progress', stage: 'admitted', executor: nativeMessage ? 'host-agent' : 'legacy-skill' }
     const progress = async (event: TaskDiagnostic) => {
       latest = safeDiagnostic({ ...latest, ...event, client_version: PLUGIN_VERSION, at: new Date().toISOString(), elapsed_ms: Date.now() - started })
-      if (this.journal) {
-        // Persist first, then send independently. A disconnected gateway must
-        // not stall each local tool or model step for an HTTP retry timeout.
-        await this.queueEvent(task.id, { diagnostics: latest })
-      }
+      if (this.journal) await this.queueEvent(task.id, { diagnostics: latest })
     }
     let heartbeat: ReturnType<typeof setInterval> | undefined
+    let execution: Promise<HarnessRunResult> | undefined
+    let settled = false
+    let drainError: unknown
+    let outcome: TaskEvent = {}
     try {
-      // Executing local work requires the gateway to accept this claim. In
-      // particular, a revoked credential or stale grant must stop execution.
+      controller.signal.throwIfAborted()
+      if (envelope.timeoutSeconds !== undefined && (!Number.isFinite(envelope.timeoutSeconds)
+          || envelope.timeoutSeconds < 1 || envelope.timeoutSeconds > 604800)) {
+        outcome = { state: 'TASK_STATE_REJECTED', message: 'Task deadline must be between 1 and 604800 seconds' }
+        return
+      }
+      const skill = nativeMessage ? this.messageExecutor
+        : Object.hasOwn(this.skills, envelope.skillId) ? this.skills[envelope.skillId] : undefined
+      if (!skill) {
+        outcome = { state: 'TASK_STATE_REJECTED', message: nativeMessage
+          ? 'This client does not support A2A message execution' : `Skill is not allowed on this device: ${envelope.skillId}` }
+        return
+      }
+      const unsupported = (envelope.requestedCapabilities ?? []).filter((capability) => !this.deviceCapabilities.includes(capability))
+      if (unsupported.length) {
+        outcome = { state: 'TASK_STATE_REJECTED', message: `Device lacks requested capabilities: ${unsupported.join(', ')}` }
+        return
+      }
       await this.deliver(task.id, { state: 'TASK_STATE_WORKING' }, true)
+      await this.journal?.markRunning(task.id)
       await progress({ kind: 'progress', stage: 'admitted' })
       if (this.journal) {
         heartbeat = setInterval(() => { void progress({ kind: 'heartbeat' }).catch(() => undefined) }, this.options.heartbeatMs ?? 30_000)
         heartbeat.unref()
       }
-      if (controller.signal.aborted) throw new DOMException('Task was canceled', 'AbortError')
-      if (envelope.approvalRequired) {
-        const approved = await this.requestApproval(`Allow remote Agent task ${task.id}?`)
-        if (!approved) {
-          await this.safeReport(task.id, {
-            state: 'TASK_STATE_CANCELED',
-            message: 'The local user did not approve this task',
-          })
-          return
-        }
+      controller.signal.throwIfAborted()
+      if (envelope.approvalRequired && !await this.requestApproval(`Allow remote Agent task ${task.id}?`)) {
+        outcome = { state: 'TASK_STATE_CANCELED', message: 'The local user did not approve this task' }
+        return
       }
-      if (controller.signal.aborted) throw new DOMException('Task was canceled', 'AbortError')
+      controller.signal.throwIfAborted()
       const context: HarnessRunContext = {
-        taskId: task.id,
-        contextId: task.contextId,
-        signal: controller.signal,
+        taskId: task.id, contextId: task.contextId, signal: controller.signal,
         requestApproval: async (reason) => {
           await progress({ kind: 'progress', stage: 'approval_required' })
           try { return await this.requestApproval(reason) }
@@ -315,53 +421,45 @@ export class TaskRunner {
         executionMode: nativeMessage ? 'a2a-message' : 'legacy-skill',
         ...(nativeMessage && this.sessionScope ? { sessionScope: await this.sessionScope() } : {}),
       }
-      const execution = skill(nativeMessage ? envelope.message : envelope.input, context)
+      execution = skill(nativeMessage ? envelope.message : envelope.input, context)
       this.executions.add(execution)
       void execution.then(
-        () => { this.executions.delete(execution) },
-        () => { this.executions.delete(execution) },
+        () => { settled = true; this.executions.delete(execution!) },
+        (error) => { settled = true; drainError = error; this.executions.delete(execution!) },
       )
-      const result = await this.withTimeout(
-        execution,
-        envelope.timeoutSeconds,
-        controller,
-      )
-      if (controller.signal.aborted) {
-        await this.safeReport(task.id, { state: 'TASK_STATE_CANCELED' })
-        return
-      }
+      const result = await this.withTimeout(execution, envelope.timeoutSeconds, controller)
+      controller.signal.throwIfAborted()
       const artifacts = this.withTextArtifact(task.id, result)
       const { error_code: _priorError, summary: _priorSummary, ...completed } = latest
-      await this.safeReport(task.id, {
-        state: 'TASK_STATE_COMPLETED',
-        ...(artifacts.length ? { artifacts } : {}),
-        ...(this.journal ? { diagnostics: safeDiagnostic({ ...completed, kind: 'result', stage: 'completed', changes: 'unknown', elapsed_ms: Date.now() - started }) } : {}),
-      })
+      outcome = { state: 'TASK_STATE_COMPLETED', ...(artifacts.length ? { artifacts } : {}),
+        ...(this.journal ? { diagnostics: safeDiagnostic({ ...completed, kind: 'result', stage: 'completed', changes: 'unknown', elapsed_ms: Date.now() - started }) } : {}) }
     } catch (error) {
-      if (error instanceof TaskAdmissionClosed) {
-        await this.journal?.finish(task.id)
-        return
-      }
-      const state: A2ATaskState = error instanceof HarnessTimeoutError
-        ? 'TASK_STATE_FAILED'
-        : controller.signal.aborted || isAbortError(error)
-          ? 'TASK_STATE_CANCELED'
-          : error instanceof HarnessAuthRequiredError
-          ? 'TASK_STATE_AUTH_REQUIRED'
-          : error instanceof HarnessInputRequiredError
-            ? 'TASK_STATE_INPUT_REQUIRED'
-            : 'TASK_STATE_FAILED'
+      if (error instanceof TaskAdmissionClosed) { outcome = {}; return }
+      const state: A2ATaskState = error instanceof HarnessTimeoutError ? 'TASK_STATE_FAILED'
+        : controller.signal.aborted || isAbortError(error) ? 'TASK_STATE_CANCELED'
+        : error instanceof HarnessAuthRequiredError ? 'TASK_STATE_AUTH_REQUIRED'
+        : error instanceof HarnessInputRequiredError ? 'TASK_STATE_INPUT_REQUIRED' : 'TASK_STATE_FAILED'
       const errorCode = error instanceof HarnessTimeoutError ? 'execution_deadline_exceeded'
         : error instanceof HarnessAuthRequiredError ? (latest.error_code ?? 'credentials_required')
         : controller.signal.aborted ? 'cancelled' : 'execution_failed'
-      await this.safeReport(task.id, { state, message: errorMessage(error),
-        ...(this.journal ? { diagnostics: safeDiagnostic({ ...latest, kind: 'error',
-          error_code: errorCode, changes: 'unknown', elapsed_ms: Date.now() - started }) } : {}),
-      })
+      outcome = { state, message: errorMessage(error),
+        ...(this.journal ? { diagnostics: safeDiagnostic({ ...latest, kind: 'error', error_code: errorCode, changes: 'unknown', elapsed_ms: Date.now() - started }) } : {}) }
       this.log('warn', 'A2A task failed', { taskId: task.id, state })
     } finally {
+      // A timeout/cancellation is not a machine release. Retain the local FIFO
+      // and remote lease until tools drain and native history has been flushed.
+      if (execution && !settled) await progress({ kind: 'progress', stage: 'draining' }).catch(() => undefined)
+      if (execution) await execution.catch(() => undefined)
       if (heartbeat) clearInterval(heartbeat)
-      this.active.delete(task.id)
+      if (drainError instanceof HarnessDrainUnconfirmedError && this.executionLeases) {
+        await this.journal!.requireRecovery(task.id, envelope.deliveryId)
+        await this.safeReport(task.id, { ...outcome, diagnostics: { ...latest, kind: 'error', stage: 'recovery_required',
+          error_code: 'drain_unconfirmed', summary: 'Inspect the native session and stop its tools before confirming machine release.', changes: 'unknown' } })
+      } else if (Object.keys(outcome).length || this.executionLeases) {
+        await this.finishDelivery(envelope, outcome)
+      } else {
+        await this.journal?.finish(task.id)
+      }
     }
   }
 

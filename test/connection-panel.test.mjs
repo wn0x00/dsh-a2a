@@ -397,3 +397,35 @@ test('a host refusal to start authorization is explained without suggesting repe
   assert.equal(page.button('申请授权').props.disabled, true)
   assert.match(page.text(), /Harness 暂未允许发起连接，请稍后刷新状态/)
 })
+
+test('machine recovery requires explicit owner confirmation and stays visible until its acknowledgement', async (t) => {
+  const task = { taskId: 'old-task', deliveryId: 'old-message', localSessionId: 'native-session', canRelease: true }
+  let tasks = [task], fail = true
+  const calls = []
+  const source = { ...connection(async () => ({ ok: true, value: { ...snapshot, phase: 'connected', recoveryTasks: tasks } })),
+    confirmStopped: async (...args) => {
+      calls.push(args)
+      if (fail) return { ok: false, error: { code: 'gateway/bad-request' } }
+      tasks = []
+      return { ok: true, value: { ...snapshot, phase: 'connected', recoveryTasks: [] } }
+    },
+  }
+  const page = await mountPanel(t, source)
+  assert.match(page.text(), /old-task|native-session/)
+  await act(async () => { page.button('确认已停止并释放机器').props.onClick() })
+  assert.equal(calls.length, 0)
+  assert.match(page.text(), /确认旧任务及工具已经停止/)
+  await act(async () => { await page.button('已检查停止，确认释放').props.onClick() })
+  assert.deepEqual(calls, [['old-task', 'old-message']])
+  assert.match(page.text(), /旧任务需要确认停止|操作未完成/)
+  fail = false
+  await act(async () => { page.button('确认已停止并释放机器').props.onClick() })
+  await act(async () => { await page.button('已检查停止，确认释放').props.onClick() })
+  assert.equal(page.button('确认已停止并释放机器'), undefined)
+})
+
+test('a busy native writer prevents the machine recovery confirmation action', async (t) => {
+  const page = await mountPanel(t, connection(async () => ({ ok: true, value: { ...snapshot, phase: 'connected',
+    recoveryTasks: [{ taskId: 'busy', deliveryId: 'message', canRelease: false }] } })))
+  assert.equal(page.button('确认已停止并释放机器').props.disabled, true)
+})

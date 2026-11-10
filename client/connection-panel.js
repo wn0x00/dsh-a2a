@@ -189,9 +189,9 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
       }
     }, [connection])
     const failed = failure !== null
-    async function act(action) {
+    async function act(action, ...args) {
       if (
-        (action === 'cancelAuthorization' ? readOnly : disabled) ||
+        (action === 'cancelAuthorization' ? readOnly : action === 'confirmStopped' ? readOnly || disabled : disabled) ||
         acting.current ||
         failed ||
         !snapshot
@@ -205,7 +205,7 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
       const currentScope = scope.current
       const current = () => live.current && currentScope === scope.current
       try {
-        const result = await connection[action]()
+        const result = await connection[action](...args)
         if (!result.ok) throw new Error('unavailable')
         if (current()) {
           setSnapshot(result.value)
@@ -248,6 +248,7 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
       ['connected', 'reconnecting'].includes(snapshot?.phase))
     const canRevoke = snapshot?.canRevokeAuthorization === true
     const revoke = confirm === 'revoke'
+    const recovery = typeof confirm === 'object' && confirm !== null ? confirm : null
     const showProgress = !failed && ['starting', 'connecting', 'authorizing', 'revoking', 'updating'].includes(snapshot?.phase)
     return h('section', {
       'aria-label': '平台连接状态',
@@ -281,20 +282,29 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
           ? h(Button, { type: 'button', variant: 'ghost', 'aria-label': '刷新状态',
             disabled: reading || busy, 'aria-busy': reading, onClick: refresh }, '重试') : null,
         !failed && snapshot?.activeTasks > 0
-          ? h('span', { style: muted }, `${snapshot.activeTasks} 个任务执行中，结束后可更改授权。`) : null,
+          ? h('span', { style: muted }, `${snapshot.activeTasks} 个任务执行或排队中，结束后可更改授权。`) : null,
       ),
+      !failed && snapshot?.recoveryTasks?.length ? h('details', { style: muted },
+        h('summary', { style: { cursor: 'pointer' } }, '旧任务需要确认停止，机器队列已暂停'),
+        h('p', null, '请检查以下本机任务及其工具已经停止。此操作只确认释放机器，不会替你停止进程。'),
+        ...snapshot.recoveryTasks.map((task) => h('div', { key: task.taskId + task.deliveryId, style: { marginTop: 10 } },
+          h('p', { style: { overflowWrap: 'anywhere' } }, `任务：${task.taskId}`),
+          task.localSessionId ? h('p', { style: { overflowWrap: 'anywhere' } }, `DSH 会话：${task.localSessionId}`) : null,
+          h(Button, { type: 'button', variant: 'outline', disabled: blocked || readOnly || !task.canRelease,
+            onClick: () => setConfirm(task) }, '确认已停止并释放机器'),
+        ))) : null,
       !failed && actionHint ? h('p', { role: 'status', style: muted }, actionHint) : null,
       !failed && confirm ? h(ConfirmDialog, {
-        title: revoke ? '解除此设备的授权？' : '重新授权此设备',
-        description: revoke
+        title: recovery ? '确认旧任务及工具已经停止？' : revoke ? '解除此设备的授权？' : '重新授权此设备',
+        description: recovery ? `任务 ${recovery.taskId}。确认前请检查本机进程和 DSH 会话；平台收到确认后将允许下一个任务执行。` : revoke
           ? '将撤销平台授权并清除本机凭据，此设备将停止接收任务。'
           : '将打开浏览器重新授权。完成后，请在平台开启新对话。',
         onClose: () => setConfirm(false),
-      }, h('div', { role: 'group', 'aria-label': revoke ? '确认解除授权' : '确认重新授权',
+      }, h('div', { role: 'group', 'aria-label': recovery ? '确认释放机器' : revoke ? '确认解除授权' : '确认重新授权',
         style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
         h(Button, { type: 'button', variant: 'ghost', 'data-modal-autofocus': true, onClick: () => setConfirm(false) }, '取消'),
-        h(Button, { type: 'button', variant: 'primary', disabled: blocked || (revoke ? !canRevoke : !snapshot.canReauthorize),
-          onClick: () => act(revoke ? 'revokeAuthorization' : 'reauthorize') }, revoke ? '确认解除授权' : '打开浏览器授权'),
+        h(Button, { type: 'button', variant: 'primary', disabled: blocked || (recovery && readOnly) || (recovery ? !snapshot.recoveryTasks?.some((task) => task.taskId === recovery.taskId && task.deliveryId === recovery.deliveryId && task.canRelease) : revoke ? !canRevoke : !snapshot.canReauthorize),
+          onClick: () => recovery ? act('confirmStopped', recovery.taskId, recovery.deliveryId) : act(revoke ? 'revokeAuthorization' : 'reauthorize') }, recovery ? '已检查停止，确认释放' : revoke ? '确认解除授权' : '打开浏览器授权'),
       )) : null,
       actionError && snapshot?.notice !== 'revocation_failed'
         ? h('p', { role: 'alert', style: { ...muted, color: '#ba5341' } }, '操作未完成，请稍后重试。') : null,

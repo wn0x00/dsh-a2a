@@ -25,13 +25,13 @@ export class A2ABridge {
   private authorized = false
 
   status(): ConnectionSnapshot {
-    const activeTasks = this.runner.activeTaskIds().length
+    const activeTasks = this.runner.localTaskCount()
     const busy = Boolean(this.connecting) || ['starting', 'authorizing', 'connecting', 'revoking', 'stopped'].includes(this.phase)
     return {
       phase: this.phase, notice: this.notice,
       gatewayUrl: new URL(this.config.gatewayUrl).origin,
       deviceId: this.config.device.id, deviceName: this.config.device.name,
-      activeTasks, pendingExpiresAt: this.oauth.pendingExpiresAt(),
+      activeTasks, recoveryTasks: this.runner.recoveryTasks(), pendingExpiresAt: this.oauth.pendingExpiresAt(),
       lastConnectedAt: this.lastConnectedAt, lastContactAt: this.lastContactAt,
       canConnect: !busy && !this.disposed && !this.loopPromise,
       canReauthorize: !busy && !this.disposed && activeTasks === 0,
@@ -74,8 +74,13 @@ export class A2ABridge {
       nativeMessages ? (message, context) => ctx.agents.run('', message, context) : undefined,
       () => this.oauth.sessionScope(),
       { ...(config.taskStorageDirectory ? { storageDirectory: config.taskStorageDirectory } : {}),
-        getTask: (taskId) => this.gateway.getTask(taskId), activeTasks: () => this.gateway.activeTasks() },
+        getTask: (taskId) => this.gateway.getTask(taskId), activeTasks: () => this.gateway.activeTasks(), recoveries: () => this.gateway.recoveryTasks() },
     )
+  }
+
+  async confirmStopped(taskId: string, deliveryId: string): Promise<void> {
+    if (this.disposed || !this.authorized) throw new ConnectionActionError('unavailable')
+    await this.runner.confirmStopped(taskId, deliveryId)
   }
 
   /** Restore saved credentials without opening a browser on startup/revocation. */
@@ -123,7 +128,7 @@ export class A2ABridge {
   /** Pause an idle connection, retaining its grant until replacement succeeds. */
   async reauthorize(): Promise<void> {
     if (this.disposed) throw new ConnectionActionError('unavailable')
-    if (this.connecting || this.completing || ['starting', 'connecting', 'authorizing'].includes(this.phase) || this.runner.activeTaskIds().length) {
+    if (this.connecting || this.completing || ['starting', 'connecting', 'authorizing'].includes(this.phase) || this.runner.localTaskCount()) {
       throw new ConnectionActionError('busy')
     }
     this.connecting = this.requestAuthorization(true)
@@ -182,8 +187,8 @@ export class A2ABridge {
     this.authorized = await this.oauth.hasCredentials()
     try { await this.oauth.accessToken(); this.authorized = true }
     catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
-    try { const registration = await this.gateway.register(this.allowedSkills)
-      await this.runner.initialize(registration.taskEventsVersion) }
+    try { const registration = await this.gateway.register(this.allowedSkills, this.config.taskStorageDirectory ? 1 : 0)
+      await this.runner.initialize(registration.taskEventsVersion, registration.executionLeaseVersion) }
     catch (error) { this.authorized = await this.oauth.hasCredentials(); throw error }
     if (this.disposed) return
     this.phase = 'connected'
@@ -238,7 +243,7 @@ export class A2ABridge {
     this.gateway.updateIdentity(identity)
     if (!this.loopPromise) return
     try {
-      await this.gateway.register(this.allowedSkills)
+      await this.gateway.register(this.allowedSkills, this.config.taskStorageDirectory ? 1 : 0)
     } catch (error) {
       if (error instanceof OAuthLoginRequiredError) {
         await this.stopPolling()
@@ -270,7 +275,7 @@ export class A2ABridge {
 
   async revokeAuthorization(): Promise<void> {
     if (this.disposed) throw new ConnectionActionError('unavailable')
-    if (this.connecting || this.completing || this.runner.activeTaskIds().length
+    if (this.connecting || this.completing || this.runner.localTaskCount()
       || ['starting', 'connecting', 'authorizing', 'revoking'].includes(this.phase)) throw new ConnectionActionError('busy')
     this.connecting = (async () => {
       // Fence task admission before any await; do not cancel an active task.
@@ -295,7 +300,7 @@ export class A2ABridge {
   /** Stop accepting work only when idle; preserve credentials for restart. */
   async pauseForUpdate(): Promise<void> {
     if (this.disposed) throw new ConnectionActionError('unavailable')
-    if (this.connecting || this.completing || this.runner.activeTaskIds().length
+    if (this.connecting || this.completing || this.runner.localTaskCount()
       || ['starting', 'connecting', 'authorizing'].includes(this.phase)) {
       throw new ConnectionActionError('busy')
     }
@@ -338,11 +343,13 @@ export class A2ABridge {
         if ((this.config.transport ?? 'pull') === 'pull') {
           // The internal pull relay carries jobs; cancellation is observed via
           // standard GetTask so a cloud CancelTask reaches the running Agent.
-          await Promise.all(this.runner.activeTaskIds().map(async (taskId) => {
+          const recoveries = new Set(this.runner.recoveryTasks().map((task) => task.taskId))
+          await Promise.all(this.runner.activeTaskIds().filter((taskId) => !recoveries.has(taskId)).map(async (taskId) => {
             const task = await this.gateway.getTask(taskId, stopController.signal)
-            if (task.state === 'TASK_STATE_CANCELED') this.runner.cancel(taskId)
+            if (task.state === 'TASK_STATE_CANCELED' || (task.metadata?.executionLease as { cancelRequested?: boolean } | undefined)?.cancelRequested) this.runner.cancel(taskId)
           }))
-          const envelope = await this.gateway.nextTask(stopController.signal)
+          const envelope = this.runner.hasCapacity()
+            ? await this.gateway.nextTask(stopController.signal) : undefined
           if (stopController.signal.aborted) break
           this.phase = 'connected'
           this.lastContactAt = Date.now()

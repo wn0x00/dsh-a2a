@@ -72,6 +72,7 @@ async function fixture(t, options = {}) {
     installConnectionControl(ctx, {
       status: () => ({ ...snapshot, ...options.extraStatus }),
       updater: options.updater,
+      confirmStopped: options.confirmStopped,
       act: async (action) => {
         if (options.actionError) throw new Error('Bearer private-token')
         actions.push(action)
@@ -338,4 +339,16 @@ test('update RPC redacts factories, action failures, and undeclared output field
   const malformed = await f.updates().status()
   assert.equal(malformed.ok, false)
   assert.doesNotMatch(JSON.stringify(malformed), /updater-secret/)
+})
+
+test('machine release RPC carries the exact task/delivery pair and remains owner-only', async (t) => {
+  const confirmed = []
+  const f = await fixture(t, { allowNonOwner: true, confirmStopped: async (...args) => confirmed.push(args) })
+  f.principal({ kind: 'agent', id: 'untrusted' })
+  assert.equal((await f.connection().confirmStopped('task', 'delivery')).ok, false)
+  assert.deepEqual(confirmed, [])
+  f.principal({ kind: 'owner' })
+  assert.equal((await f.connection().confirmStopped('task', 'delivery')).ok, true)
+  assert.deepEqual(confirmed, [['task', 'delivery']])
+  assert.deepEqual(f.calls.at(-1).payload, { args: { taskId: 'task', deliveryId: 'delivery' } })
 })

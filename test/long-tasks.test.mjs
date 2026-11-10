@@ -234,8 +234,9 @@ test('a slow diagnostic upload cannot block cancellation polling', async (t) => 
   let delivered = false, releaseUpload, observedCancel
   const upload = new Promise((resolve) => { releaseUpload = resolve })
   const cancelled = new Promise((resolve) => { observedCancel = resolve })
-  let uploads = 0, reads = 0
+  let uploads = 0, reads = 0, executionStarted = false
   const bridge = createBridge({ agents: { run: async (_skill, _input, context) => {
+    executionStarted = true
     try {
       await context.reportProgress({ kind: 'progress', stage: 'running' })
       context.signal.throwIfAborted()
@@ -252,12 +253,12 @@ test('a slow diagnostic upload cannot block cancellation polling', async (t) => 
       if (path.endsWith('/tasks/active')) return Response.json({ tasks: [], next_after_id: null })
       if (path.endsWith('/events')) {
         const event = JSON.parse(init.body)
-        if (event.diagnostics) { uploads++; await upload }
+        if (event.diagnostics && event.diagnostics.stage !== 'queued') { uploads++; await upload }
         return Response.json({})
       }
       if (path === '/a2a') {
         reads++
-        return Response.json({ result: { id: 'task-one', contextId: 'context-one', status: { state: reads === 1 ? 'TASK_STATE_WORKING' : 'TASK_STATE_CANCELED' } } })
+        return Response.json({ result: { id: 'task-one', contextId: 'context-one', status: { state: executionStarted ? 'TASK_STATE_CANCELED' : 'TASK_STATE_WORKING' } } })
       }
       if (delivered) return new Response(null, { status: 204 })
       delivered = true

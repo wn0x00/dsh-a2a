@@ -17,19 +17,20 @@ test('stop waits for timed-out native execution to dispose before releasing owne
       try { await cleanup; return { text: 'late result' } } finally { disposed = true }
     }, async () => 'local-scope',
   )
-  await runner.handle({ type: 'task', envelope: {
+  const running = runner.handle({ type: 'task', envelope: {
     task: { id: 'timeout', contextId: 'context', state: 'TASK_STATE_SUBMITTED' },
     executionMode: 'a2a-message', deliveryId: 'timeout:message', timeoutSeconds: 1,
     message: { messageId: 'message', role: 'ROLE_USER', parts: [{ text: 'wait' }] },
   } })
+  while (!aborted) await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(aborted, true)
   assert.equal(disposed, false)
-  assert.equal(reports.at(-1).state, 'TASK_STATE_FAILED')
+  assert.equal(reports.at(-1).state, 'TASK_STATE_WORKING')
   const stopping = runner.stop().then(() => { stopped = true })
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(stopped, false)
   release()
-  await stopping
+  await Promise.all([running, stopping])
   assert.equal(disposed, true)
   assert.equal(stopped, true)
   assert.deepEqual(reports.map((event) => event.state), ['TASK_STATE_WORKING', 'TASK_STATE_FAILED'])

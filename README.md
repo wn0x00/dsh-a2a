@@ -59,3 +59,5 @@ npm run pack:release
 - [发布说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/RELEASE.md)
 
 0.2.4 不再默认限制任务必须在五分钟内完成。升级后的平台可以接收持久化任务回执、执行进度和脱敏诊断，详见[长任务与恢复说明](docs/USAGE.md#long-running-tasks-and-diagnostics-024)。
+
+0.2.6 将同一设备的任务串行执行；取消或超时后会等待工具退出和会话保存，再确认释放机器。重启后无法确认停止的旧任务，可在本机“平台连接状态”中检查并确认释放，详见[机器队列与恢复](docs/USAGE.md#machine-queue-and-recovery-026)。

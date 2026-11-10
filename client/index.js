@@ -532,6 +532,7 @@ window.__ModuleLoader__.load({
           reauthorize: () => ctx.remote.dshA2a.reauthorize(),
           cancelAuthorization: () => ctx.remote.dshA2a.cancelAuthorization(),
           revokeAuthorization: () => ctx.remote.dshA2a.revokeAuthorization(),
+          confirmStopped: (taskId, deliveryId) => ctx.remote.dshA2a.confirmStopped(taskId, deliveryId),
           subscribe: (refresh) => ctx.on('connection/reset', refresh),
         },
         updates: {

@@ -8,11 +8,14 @@ export type TaskRecord = {
   task_id: string
   context_id: string
   deliveries: string[]
-  phase: 'running' | 'finished'
+  phase: 'queued' | 'running' | 'finished'
   updated_at: string
   diagnostics: TaskDiagnostic[]
   pending: TaskEvent[]
   local_session_id?: string
+  execution?: { delivery_id: string; phase: 'held' | 'drained' | 'released' }
+  recovery_pending?: boolean
+  previous_grant?: boolean
   terminal?: TaskEvent
   rejected?: Array<{ event_id: string; reason: string }>
 }
@@ -39,7 +42,7 @@ export class TaskJournal {
       if (row.version !== 1 || !row.task_id || !Array.isArray(row.pending) || !Array.isArray(row.deliveries) || !Array.isArray(row.diagnostics)) {
         throw new Error('Local task journal is invalid; execution has not resumed')
       }
-      if (row.phase === 'finished' && row.pending.length === 0 && Date.parse(row.updated_at) < Date.now() - 30 * 86400_000) {
+      if (row.phase === 'finished' && (!row.execution || row.execution.phase === 'released') && row.pending.length === 0 && Date.parse(row.updated_at) < Date.now() - 30 * 86400_000) {
         await rm(join(this.directory, name)); continue
       }
       this.records.set(row.task_id, row)
@@ -52,14 +55,15 @@ export class TaskJournal {
     return row ? structuredClone(row) : undefined
   }
 
-  async begin(taskId: string, contextId: string, deliveryId: string): Promise<boolean> {
+  async begin(taskId: string, contextId: string, deliveryId: string, options: { queued?: boolean; leased?: boolean } = {}): Promise<boolean> {
     let started = false
     await this.change(taskId, (previous) => {
       if (previous?.deliveries.includes(deliveryId)) return previous
       started = true
       return { version: 1, task_id: taskId, context_id: contextId,
         deliveries: [...(previous?.deliveries ?? []), deliveryId].slice(-100),
-        phase: 'running', updated_at: new Date().toISOString(), diagnostics: previous?.diagnostics ?? [],
+        ...(options.leased ? { execution: { delivery_id: deliveryId, phase: 'held' as const } } : {}),
+        phase: options.queued ? 'queued' : 'running', updated_at: new Date().toISOString(), diagnostics: previous?.diagnostics ?? [],
         pending: previous?.pending ?? [], ...(previous?.local_session_id ? { local_session_id: previous.local_session_id } : {}) }
     })
     return started
@@ -79,10 +83,14 @@ export class TaskJournal {
       }
       row.pending.push(structuredClone(event))
       // Bound offline diagnostic storage without ever discarding state/results.
-      const excess = row.pending.filter((item) => !item.state).length - 1000
+      const excess = row.pending.filter((item) => !item.state && !item.execution).length - 1000
       if (excess > 0) {
         let remaining = excess
-        row.pending = row.pending.filter((item) => item.state || remaining-- <= 0)
+        row.pending = row.pending.filter((item) => item.state || item.execution || remaining-- <= 0)
+      }
+      if (event.execution) {
+        if (row.execution?.delivery_id !== event.execution.delivery_id) throw new Error('Execution receipt does not match the local delivery')
+        row.execution.phase = 'drained'; row.phase = 'finished'
       }
       if (event.state && RESPONSE_STATES.has(event.state)) { row.phase = 'finished'; row.terminal = structuredClone(event) }
       row.updated_at = new Date().toISOString()
@@ -103,7 +111,37 @@ export class TaskJournal {
   async acknowledge(taskId: string, eventId: string): Promise<void> {
     await this.change(taskId, (row) => {
       if (!row) throw new Error('Task journal record is missing')
+      const event = row.pending.find((item) => item.event_id === eventId)
+      if (event?.execution && row.execution?.delivery_id === event.execution.delivery_id) {
+        row.execution.phase = 'released'; row.recovery_pending = false
+      }
       row.pending = row.pending.filter((item) => item.event_id !== eventId)
+      return row
+    })
+  }
+
+  async releaseExecution(taskId: string, deliveryId: string): Promise<void> {
+    await this.change(taskId, (row) => {
+      if (!row || row.execution?.delivery_id !== deliveryId) throw new Error('Execution receipt does not match the local delivery')
+      row.execution.phase = 'released'; row.recovery_pending = false; row.phase = 'finished'
+      return row
+    })
+  }
+
+  async markRunning(taskId: string): Promise<void> {
+    await this.change(taskId, (row) => {
+      if (!row) throw new Error('Task journal record is missing')
+      row.phase = 'running'; row.updated_at = new Date().toISOString()
+      return row
+    })
+  }
+
+  async requireRecovery(taskId: string, deliveryId: string, previousGrant = false): Promise<void> {
+    await this.change(taskId, (row) => {
+      if (!row) throw new Error('Task journal record is missing')
+      row.execution = { delivery_id: deliveryId, phase: 'held' }
+      row.recovery_pending = true
+      row.previous_grant = previousGrant
       return row
     })
   }

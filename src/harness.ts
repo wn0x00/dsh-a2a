@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { HarnessAuthRequiredError } from './task-runner.js'
+import { HarnessAuthRequiredError, HarnessDrainUnconfirmedError } from './task-runner.js'
 import { diagnosticText } from './task-diagnostics.js'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -121,6 +121,7 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
   let disposed = false
   let disposal: Promise<void> | undefined
   return {
+    sessionBusy: (sessionId) => ctx.agents.get?.(sessionId)?.status === 'running',
     dispose: () => disposal ??= (async () => {
       disposed = true
       const handles = [...retained.values()]
@@ -176,6 +177,8 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
           let keep = retained.get(sessionId) === handle
           let observer: ReturnType<typeof setInterval> | undefined
           let observed = Promise.resolve()
+          let submitted = false
+          let idleConfirmed = false
           const abort = () => {
             try {
               handle.agent.cancel?.({ kind: 'user' })
@@ -240,11 +243,13 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
               executor: 'dsh-native', selection_source: selectionSource,
               ...(actualProvider ? { provider: actualProvider } : {}),
               ...(actualModel ? { model: actualModel } : {}) })
+            runContext.signal.throwIfAborted()
             if (runContext.reportProgress) {
               observer = setInterval(() => { observed = observed.then(scan).catch(() => undefined) }, 1000)
               observer.unref()
             }
             runContext.signal.addEventListener('abort', abort, { once: true })
+            submitted = true
             handle.agent.followup({
               id: randomUUID(),
               role: 'user',
@@ -252,6 +257,7 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
               source: { kind: 'user' },
             })
             await handle.agent.whenIdle()
+            idleConfirmed = true
             if (observer) clearInterval(observer)
             await observed
             await scan()
@@ -268,10 +274,14 @@ export function createNativeHarnessContext(ctx: HarnessCordisContext, config: Ha
             // DSH emits api-session/removed when a live handle is disposed.
             // Keep normal native sessions visible and release them only with
             // the plugin. Explicit flush replaces close's durability barrier.
-            if (keep) {
-              if (!await sessionStore!.flush(handle.agent.session)) throw new Error('DSH 会话未连接持久化服务，无法确认任务记录已保存。')
+            try {
+              if (submitted && !idleConfirmed) await handle.agent.whenIdle()
+              if (keep) {
+                if (!await sessionStore!.flush(handle.agent.session)) throw new Error('DSH 会话未连接持久化服务，无法确认任务记录已保存。')
+              } else await handle.dispose()
+            } catch (error) {
+              throw new HarnessDrainUnconfirmedError(error instanceof Error ? error.message : 'Native tool cleanup could not be confirmed')
             }
-            else await handle.dispose()
           }
         }
         if (!native) {
@@ -495,6 +505,11 @@ export function apply(ctx: HarnessCordisContext, config: HarnessPluginConfig = {
     // Standalone bridge consumers have no Cordis registry; the real Host does.
     if ('inject' in ctx) installConnectionControl(ctx as unknown as Context, {
       updater: () => updater,
+      confirmStopped: async (taskId, deliveryId) => {
+        if (disposed || !bridge) throw new ConnectionActionError('unavailable')
+        if (controlUpdate || updating) throw new ConnectionActionError('busy')
+        await bridge.confirmStopped(taskId, deliveryId)
+      },
       status: () => {
         const configured = configuredGatewayUrl(config)
         const snapshot: ConnectionSnapshot = bridge?.status() ?? {
