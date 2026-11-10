@@ -255,7 +255,7 @@ export function createUpdatePanel(React, Button, { Tooltip, Modal } = {}) {
       'section',
       { 'aria-label': '插件更新', style: { padding: 16, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1)', display: 'grid', gap: 10 } },
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-        h('strong', { style: { fontSize: 13 } }, '插件更新'),
+        h('strong', { style: { fontSize: 14 } }, '插件更新'),
         h('span', { style: muted, title: `${snapshot ? `本次运行版本 ${snapshot.currentVersion}。` : ''}${label}。更新源：npm 官方仓库。` },
           snapshot ? `v${snapshot.currentVersion}` : '读取版本…'),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto' } },
