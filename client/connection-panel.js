@@ -271,9 +271,18 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
       style: { padding: 16, display: 'grid', gap: 10, borderRadius: 10,
         border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-1)' },
     },
-      label,
+      h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+        label,
+        showAuthIcons
+          ? h('span', { role: 'status', title: '已完成平台授权',
+            style: { display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 } },
+            h('span', { 'aria-hidden': true, style: { width: 8, height: 8, borderRadius: '50%',
+              background: 'var(--dsw-alias-state-success-primary)' } }),
+            h('span', { style: muted }, '已授权'))
+          : null,
+      ),
       h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-        h('div', { style: { flex: '1 1 0', minWidth: 0 } }, children),
+        h('div', { style: { flex: '1 1 0', minWidth: 0, display: 'grid' } }, children),
         showAuthIcons
           ? h(Button, { type: 'button', variant: 'ghost', 'aria-label': '重新授权', title: '重新授权',
             disabled: blocked || !snapshot.canReauthorize, onClick: () => setConfirm('reauthorize'),

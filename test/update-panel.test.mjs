@@ -127,15 +127,17 @@ async function fixture(t, options = {}) {
   }
 }
 
-test('mounting, status polling and refreshing never check for or install updates automatically', async (t) => {
+test('mounting and status polling never check for or install updates automatically', async (t) => {
   const clock = fakeTimers(t)
   const page = await fixture(t)
   assert.match(page.text(), /尚未检查更新/)
   assert.equal(page.calls.status.length, 1)
   await clock.fire(3000)
-  await page.click('刷新更新状态')
-  assert.equal(page.calls.status.length, 3)
   assert.deepEqual(page.calls.check, [])
+  assert.deepEqual(page.calls.install, [])
+  await page.click('检查更新')
+  assert.equal(page.calls.check.length, 1)
+  assert.equal(page.calls.status.length, 3)
   assert.deepEqual(page.calls.install, [])
   assert.ok(
     page.calls.status.every(({ signal }) => signal instanceof AbortSignal),
@@ -245,7 +247,7 @@ test('lost installation replies remain unknown until a receipt is confirmed, nev
   assert.match(page.text(), /更新结果待核对/)
   assert.doesNotMatch(page.text(), /更新未完成|private-install-secret|Bearer/)
   assert.equal(page.button('更新到 0.2.1'), undefined)
-  await page.click('刷新更新状态')
+  await page.click('检查更新')
   assert.match(page.text(), /更新结果待核对/)
   assert.equal(page.calls.check.length, 0)
   assert.deepEqual(page.calls.install, ['0.2.1'])
@@ -279,7 +281,7 @@ test('an unavailable namespace during installation is unknown and recovers throu
     ok: true,
     value: { ...completed, phase: 'updated' },
   })
-  await page.click('刷新更新状态')
+  await page.click('检查更新')
   assert.match(page.text(), /插件已更新/)
   assert.doesNotMatch(page.text(), /更新结果待核对/)
   assert.deepEqual(page.calls.install, ['0.2.1'])
@@ -333,7 +335,7 @@ test('an unreadable update status hides installation and a timed-out read can be
   assert.equal(signal.aborted, true)
   assert.match(page.text(), /无法读取更新状态/)
   assert.equal(page.button('更新到 0.2.1'), undefined)
-  await page.click('刷新更新状态')
+  await page.click('检查更新')
   await act(async () => {
     pending.resolve({
       ok: true,

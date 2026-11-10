@@ -258,8 +258,7 @@ export function createUpdatePanel(React, Button, { Tooltip, Modal } = {}) {
               ? h(Button, { type: 'button', variant: 'primary', disabled: installBlocked,
                 title: !snapshot.canInstall ? '等待任务或授权结束后可更新' : undefined,
                 onClick: () => setConfirmVersion(snapshot.latestVersion) }, `更新到 ${snapshot.latestVersion}`)
-              : h(Button, { type: 'button', variant: 'ghost', disabled: disabled || readOnly || processing,
-                onClick: () => run('check') }, '检查更新')
+              : null
     const notes = []
     if (readError) notes.push(h('p', { key: 'read', style: muted },
       '请确认插件已启用。若刚更新插件，请完全退出 Harness 后重新打开，再刷新更新状态。'))
@@ -284,8 +283,10 @@ export function createUpdatePanel(React, Button, { Tooltip, Modal } = {}) {
           : null,
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto' } },
           primaryAction,
-          h(Button, { type: 'button', variant: 'ghost', 'aria-label': '刷新更新状态', title: '刷新更新状态',
-            disabled: reading, 'aria-busy': reading, onClick: refresh,
+          h(Button, { type: 'button', variant: 'ghost', 'aria-label': '检查更新',
+            title: readError || unknown ? '刷新更新状态' : '检查更新',
+            disabled: reading || processing || disabled || readOnly, 'aria-busy': reading,
+            onClick: () => (readError || unknown ? refresh() : run('check')),
             style: { minWidth: 24, padding: 4, fontSize: 17 } }, '↻'),
         ),
       ),

@@ -29,6 +29,7 @@ window.__ModuleLoader__.load({
     const labelStyle = { fontSize: 14, fontWeight: 500 }
     const selectStyle = {
       width: '100%',
+      boxSizing: 'border-box',
       padding: 8,
       borderRadius: 6,
       color: 'inherit',
