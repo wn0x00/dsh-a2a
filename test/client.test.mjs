@@ -61,6 +61,7 @@ async function renderConfiguration(t, options = {}) {
       writes.push({ ops: JSON.parse(JSON.stringify(ops)), revision })
       if (options.saveError) throw new Error('offline')
       if (options.refuse || revision !== snapshot.revision) return false
+      if (options.holdSave) await options.holdSave
       publish({
         value: {
           ...snapshot.value,
@@ -418,8 +419,7 @@ test('native bundle configuration reads the host value and saves the chosen dire
       revision: 3,
     },
   ])
-  assert.match(page.text(), /已自动保存/)
-  assert.equal(page.button('保存任务配置'), undefined)
+  assert.doesNotMatch(page.text(), /未能保存|保存失败/)
 })
 
 test('desktop picker takes precedence over the host picker and cancel preserves the saved directory', async (t) => {
@@ -448,7 +448,7 @@ test('a failed native picker preserves the directory and existing workspaces rem
   await page.select('工作区', 'project-a')
   await page.save()
   assert.equal(page.writes[0].ops[0].value, 'C:\\Projects\\existing')
-  assert.match(page.text(), /已自动保存/)
+  assert.doesNotMatch(page.text(), /未能保存|保存失败/)
 })
 
 test('host validation refusal never displays an unsaved path as saved', async (t) => {
@@ -495,8 +495,34 @@ test('a refused save re-pins the draft revision so a retry overwrites consciousl
   assert.deepEqual(page.writes[1].ops, [
     { op: 'set', path: ['workingDirectory'], value: 'C:\\my-edit' },
   ])
-  assert.match(page.text(), /已自动保存/)
+  assert.doesNotMatch(page.text(), /未能保存|保存失败/)
   assert.equal(page.input().props.value, 'C:\\my-edit')
+})
+
+test('an in-flight save keeps fields enabled so typing never loses focus', async (t) => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const page = await renderConfiguration(t, { holdSave: gate })
+  const gateway = () =>
+    page.view.root
+      .findAllByType('input')
+      .find((element) => element.props['aria-label'] === '平台地址')
+  await act(async () =>
+    gateway().props.onChange({ target: { value: 'https://agent.example' } }),
+  )
+  let saving
+  await act(async () => {
+    saving = page.view.root
+      .findByType('form')
+      .props.onSubmit({ preventDefault() {} })
+  })
+  assert.equal(gateway().props.disabled, false)
+  assert.equal(page.input().props.disabled, false)
+  await act(async () => {
+    release()
+    await saving
+  })
+  assert.doesNotMatch(page.text(), /未能保存|保存失败/)
 })
 
 test('connection failure keeps the draft and allows retry', async (t) => {
@@ -861,16 +887,25 @@ test('model choice saves immediately through real ConfigForms and following defa
   const sdk = await actualConfigForms()
   const page = await renderConfiguration(t, { configForm: sdk.form })
   t.after(sdk.dispose)
+  const hoverModelTip = async () => {
+    await act(async () => {
+      page.view.root
+        .findByProps({ 'aria-label': '模型说明' })
+        .props.onMouseEnter({ currentTarget: {} })
+    })
+  }
   await page.select('模型', JSON.stringify(['deepseek', 'deepseek-chat']))
   assert.equal(sdk.form.getSnapshot().value.provider, 'deepseek')
   assert.equal(sdk.form.getSnapshot().value.model, 'deepseek-chat')
   await page.reopen()
-  assert.match(page.text(), /新会话使用：deepseek\/deepseek-chat/)
+  await hoverModelTip()
+  assert.match(page.text(), /新会话使用：deepseek\/deepseek-chat（插件指定）/)
   await page.select('模型', '')
   assert.equal(sdk.form.getSnapshot().value.provider, '')
   assert.equal(sdk.form.getSnapshot().value.model, '')
   await page.reopen()
   assert.equal(page.view.root.findByProps({ 'aria-label': '模型' }).props.value, '')
+  await hoverModelTip()
   assert.match(page.text(), /新会话跟随全局默认：mimo\/mimo-v2.5-pro/)
   assert.match(page.text(), /临时切换模型，不会更改全局默认/)
 })

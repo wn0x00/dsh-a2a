@@ -114,7 +114,6 @@ window.__ModuleLoader__.load({
         setNotice(null)
       }
       const presets = catalogs.presets?.presets ?? []
-      const defaultPreset = presets.find((item) => item.isDefault)
       const groups = catalogs.models?.groups ?? []
       const selectedPreset = presets.find((item) =>
         value.agentPreset ? item.id === value.agentPreset : item.isDefault,
@@ -173,10 +172,7 @@ window.__ModuleLoader__.load({
             setDraft((previous) => previous === draft ? null : previous && ({
               ...previous, revision: form.getSnapshot().revision,
             }))
-            setNotice({
-              error: false,
-              text: '已自动保存',
-            })
+            setNotice(null)
           } else {
             // A refusal re-read the Host document (configForm recovery). Re-pin
             // the draft to the fresh revision so 重试保存 consciously overwrites
@@ -211,6 +207,11 @@ window.__ModuleLoader__.load({
         return () => clearTimeout(timer)
       }, [draft, editable, busy, changed, snapshot.revision, notice?.error])
       const disabled = !editable || busy !== null
+      // Editable fields stay enabled while a save is in flight: disabling a
+      // focused input drops its focus, which interrupted typing after every
+      // autosave. Mid-save edits merge into the draft and save next. The
+      // native picker still locks the form while its dialog is open.
+      const fieldDisabled = !editable || busy === 'pick'
       return h(
         'form',
         {
@@ -247,7 +248,7 @@ window.__ModuleLoader__.load({
             'aria-label': '平台地址',
             value: value.gatewayUrl,
             maxLength: 500,
-            disabled,
+            disabled: fieldDisabled,
             placeholder: 'https://platform.example.com',
             autoComplete: 'off',
             spellCheck: false,
@@ -268,8 +269,8 @@ window.__ModuleLoader__.load({
             },
           },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
-            h('label', { htmlFor: `${id}-project` }, '工作区（项目目录）'),
-            h(InfoTip, { label: '工作区（项目目录）说明', text: '任务在此目录运行；更换目录后请开启新对话。' }),
+            h('label', { htmlFor: `${id}-project` }, '工作区'),
+            h(InfoTip, { label: '工作区说明', text: '任务在此目录运行；更换目录后请开启新对话。' }),
           ),
           h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 } },
           h(
@@ -281,7 +282,7 @@ window.__ModuleLoader__.load({
               value:
                 project?.workspaceId ??
                 (value.workingDirectory ? '__custom__' : ''),
-              disabled: disabled || projects.phase !== 'ready',
+              disabled: fieldDisabled || projects.phase !== 'ready',
               style: { ...selectStyle, flex: '1 1 0', minWidth: 0, width: 0 },
               onChange: (event) => {
                 if (!event.target.value) {
@@ -317,23 +318,17 @@ window.__ModuleLoader__.load({
             ),
           ),
         h(
-          'details',
-          { style: { borderTop: '1px solid var(--dsw-alias-border-l3)', paddingTop: 12 } },
-          h('summary', { style: { cursor: 'pointer', fontSize: 13, padding: '4px 0' } }, '高级设置 · 设备、预设与模型'),
-        h(
-          'section',
+          'div',
           {
-            'aria-label': '设备信息',
-            style: { display: 'grid', gap: 8, padding: '8px 0' },
+            style: { display: 'grid', gap: 8, borderTop: '1px solid var(--dsw-alias-border-l3)', paddingTop: 12 },
           },
-          h('h4', { style: { margin: '0 0 4px', fontSize: 14 } }, '设备信息'),
           h('label', { htmlFor: `${id}-name` }, '设备名称'),
           h(Input, {
             id: `${id}-name`,
             'aria-label': '设备名称',
             value: value.deviceName,
             maxLength: 200,
-            disabled,
+            disabled: fieldDisabled,
             placeholder: '留空使用 DeepSeek Harness（计算机名）',
             onChange: (event) => update({ deviceName: event.target.value }),
           }),
@@ -344,7 +339,7 @@ window.__ModuleLoader__.load({
             value: value.deviceDescription,
             maxLength: 1000,
             rows: 2,
-            disabled,
+            disabled: fieldDisabled,
             style: { ...selectStyle, resize: 'vertical' },
             placeholder:
               '说明此设备适合处理的任务，平台子 Agent 列表和 A2A Card 会展示。',
@@ -353,22 +348,23 @@ window.__ModuleLoader__.load({
           }),
         ),
           h('div', { style: { display: 'grid', gap: 8, padding: '8px 0' } },
-          h('label', { htmlFor: `${id}-preset` }, 'Agent 预设（工具集）'),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+            h('label', { htmlFor: `${id}-preset` }, 'Agent 预设（工具集）'),
+            h(InfoTip, { label: 'Agent 预设说明', text: selectedPreset?.broken
+              ? `所选预设不可用：${selectedPreset.broken}`
+              : (selectedPreset?.description ?? '工具由所选 Agent 预设决定。') }),
+          ),
           h(
             'select',
             {
               id: `${id}-preset`,
               'aria-label': 'Agent 预设',
               value: value.agentPreset,
-              disabled: disabled || !catalogs.presets,
+              disabled: fieldDisabled || !catalogs.presets,
               style: selectStyle,
               onChange: (event) => update({ agentPreset: event.target.value }),
             },
-            h(
-              'option',
-              { value: '' },
-              `跟随 Harness 默认${defaultPreset ? ` · ${defaultPreset.name ?? defaultPreset.id}` : ''}`,
-            ),
+            h('option', { value: '' }, '跟随 Harness 默认'),
             value.agentPreset &&
               !presets.some((item) => item.id === value.agentPreset)
               ? h(
@@ -389,17 +385,15 @@ window.__ModuleLoader__.load({
               ),
             ),
           ),
-          h(
-            'p',
-            { style: muted },
-            selectedPreset?.broken
-              ? `所选预设不可用：${selectedPreset.broken}`
-              : (selectedPreset?.description ??
-                  '工具由所选 Agent 预设决定。'),
-          ),
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
             h('label', { htmlFor: `${id}-model` }, '模型'),
-            h(InfoTip, { label: '模型说明', text: '仅影响新会话。添加模型请前往 Harness 设置 → 模型。' }),
+            h(InfoTip, { label: '模型说明', text: `${
+              modelSelection
+                ? `新会话使用：${value.provider}/${value.model}（插件指定）`
+                : catalogs.models?.default
+                  ? `新会话跟随全局默认：${catalogs.models.default.provider}/${catalogs.models.default.model}`
+                  : '尚未读取到 Harness 全局默认模型'
+            }。已有会话保留自己的模型；普通对话中临时切换模型，不会更改全局默认。仅影响新会话；添加模型请前往 Harness 设置 → 模型。` }),
           ),
           h(
             'select',
@@ -407,7 +401,7 @@ window.__ModuleLoader__.load({
               id: `${id}-model`,
               'aria-label': '模型',
               value: modelSelection,
-              disabled: disabled || !catalogs.models,
+              disabled: fieldDisabled || !catalogs.models,
               style: selectStyle,
               onChange: (event) => {
                 const [provider, model] = event.target.value
@@ -416,11 +410,7 @@ window.__ModuleLoader__.load({
                 update({ provider, model }, true)
               },
             },
-            h(
-              'option',
-              { value: '' },
-              `跟随 Harness 默认${catalogs.models?.default ? ` · ${catalogs.models.default.provider}/${catalogs.models.default.model}` : ''}`,
-            ),
+            h('option', { value: '' }, '跟随 Harness 默认'),
             modelSelection && !availableModel
               ? h(
                   'option',
@@ -442,14 +432,6 @@ window.__ModuleLoader__.load({
               ),
             ),
           ),
-          h('p', { style: muted, 'aria-label': '新任务模型' },
-            modelSelection
-              ? `新会话使用：${value.provider}/${value.model}（插件指定）`
-              : catalogs.models?.default
-                ? `新会话跟随全局默认：${catalogs.models.default.provider}/${catalogs.models.default.model}`
-                : '尚未读取到 Harness 全局默认模型',
-            '。已有会话保留自己的模型；普通对话中临时切换模型，不会更改全局默认。',
-          ),
           catalogs.models?.failures?.length
             ? h(
                 'p',
@@ -465,7 +447,7 @@ window.__ModuleLoader__.load({
                 paddingTop: 12,
               },
             },
-            h('strong', null, '权限'),
+            h('strong', { style: { fontSize: 14 } }, '权限'),
             h(
               'p',
               { style: muted },
@@ -499,7 +481,6 @@ window.__ModuleLoader__.load({
               )
             : null,
           ),
-        ),
         ),
         h(UpdatePanel, {
           updates,
