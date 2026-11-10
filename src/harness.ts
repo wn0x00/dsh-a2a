@@ -112,6 +112,7 @@ function failedTurn(events: readonly HarnessSessionEvent[], sessionId: string): 
     parts.push(`工具 ${diagnosticText(call?.data?.name ?? 'unknown')}${detail?.code ? ` (${diagnosticText(detail.code)})` : ''}${detail?.reason ? `: ${diagnosticText(detail.reason)}` : ''}`)
   }
   parts.push(`DSH 会话: ${sessionId}`)
+  if (reason?.kind === 'aborted') return new DOMException(parts.join('；'), 'AbortError')
   return code === 'MISSING_CREDENTIAL' ? new HarnessAuthRequiredError(parts.join('；')) : new Error(parts.join('；'))
 }
 

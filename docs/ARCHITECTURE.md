@@ -130,6 +130,14 @@ tasks as a platform caller.
 
 ## Native execution and persistence
 
+A native `turn/end` with reason `aborted` becomes an A2A `TASK_STATE_CANCELED`
+result with diagnostic code `cancelled`, including stops initiated in the local
+DSH session. `interrupted` and provider errors remain failures. Cancellation
+does not bypass native idle or session persistence: an unconfirmed flush keeps
+the machine lease held for recovery. The platform delivers the task outcome to
+the originating caller conversation; the plugin does not close that conversation
+or replay the task.
+
 `src/task-runner.ts` persists queued receipts and serializes all received work on the device before dispatching to the native adapter. The adapter
 uses the selected Harness Agent preset, model and workspace and retains native
 Agent handles until disposal. Remote payloads cannot override local execution

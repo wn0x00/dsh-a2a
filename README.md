@@ -58,4 +58,4 @@ npm run pack:release
 - [架构说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/ARCHITECTURE.md)
 - [发布说明](https://github.com/wn0x00/dsh-a2a/blob/main/docs/RELEASE.md)
 
-0.3.0 使用当前 V1 任务回执与机器租约协议。任务默认不限总时长，同一设备串行执行；取消后等待工具停止和会话保存。网络或平台注册暂时失败会自动重试，历史任务待确认时仍保持连接，详见[机器队列与恢复](docs/USAGE.md#machine-queue-and-recovery)及[连接恢复](docs/USAGE.md#connection-recovery)。
+0.3.1 使用当前 V1 任务回执与机器租约协议。任务默认不限总时长，同一设备串行执行；本地手动停止会回传“已取消”，等待工具停止和会话保存后释放机器；模型错误或异常中断仍报告失败。网络或平台注册暂时失败会自动重试，历史任务待确认时仍保持连接，详见[机器队列与恢复](docs/USAGE.md#machine-queue-and-recovery)及[连接恢复](docs/USAGE.md#connection-recovery)。
