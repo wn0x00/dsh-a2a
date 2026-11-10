@@ -25,7 +25,8 @@ window.__ModuleLoader__.load({
       'model',
       'automaticUpdates',
     ]
-    const muted = { margin: 0, opacity: 0.72, lineHeight: 1.6 }
+    const muted = { margin: 0, opacity: 0.72, fontSize: 12, lineHeight: 1.6 }
+    const labelStyle = { fontSize: 14, fontWeight: 500 }
     const selectStyle = {
       width: '100%',
       padding: 8,
@@ -216,10 +217,10 @@ window.__ModuleLoader__.load({
         'form',
         {
           onSubmit: save,
-          'aria-label': 'A2A 平台任务配置',
+          'aria-label': 'A2A 配置',
           style: { display: 'grid', gap: 12, maxWidth: 680, minWidth: 0 },
         },
-        h('h3', { style: { margin: 0, fontSize: 16 } }, 'A2A 平台任务'),
+        h('h3', { style: { margin: 0, fontSize: 16 } }, 'A2A 配置'),
         h(ConnectionPanel, {
           connection,
           disabled: disabled || changed,
@@ -232,29 +233,22 @@ window.__ModuleLoader__.load({
               : busy === 'pick'
                 ? '正在选择工作区，请完成或取消选择后再操作。'
                 : null),
-        },
-        h(
-          'section',
-          {
-            'aria-label': '平台地址',
-            style: { display: 'grid', gap: 8, padding: '8px 0' },
-          },
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
-            h('label', { htmlFor: `${id}-gateway` }, '平台地址'),
+          label: h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+            h('label', { htmlFor: `${id}-gateway`, style: labelStyle }, '平台地址'),
             h(InfoTip, { label: '平台地址说明', text: '填写平台网址。更换地址后需要重新授权。' }),
           ),
-          h(Input, {
-            id: `${id}-gateway`,
-            'aria-label': '平台地址',
-            value: value.gatewayUrl,
-            maxLength: 500,
-            disabled: fieldDisabled,
-            placeholder: 'https://platform.example.com',
-            autoComplete: 'off',
-            spellCheck: false,
-            onChange: (event) => update({ gatewayUrl: event.target.value }),
-          }),
-        )
+        },
+        h(Input, {
+          id: `${id}-gateway`,
+          'aria-label': '平台地址',
+          value: value.gatewayUrl,
+          maxLength: 500,
+          disabled: fieldDisabled,
+          placeholder: 'https://platform.example.com',
+          autoComplete: 'off',
+          spellCheck: false,
+          onChange: (event) => update({ gatewayUrl: event.target.value }),
+        })
         ),
         h(
           'section',
@@ -269,7 +263,7 @@ window.__ModuleLoader__.load({
             },
           },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
-            h('label', { htmlFor: `${id}-project` }, '工作区'),
+            h('label', { htmlFor: `${id}-project`, style: labelStyle }, '工作区'),
             h(InfoTip, { label: '工作区说明', text: '任务在此目录运行；更换目录后请开启新对话。' }),
           ),
           h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 } },
@@ -322,7 +316,7 @@ window.__ModuleLoader__.load({
           {
             style: { display: 'grid', gap: 8, borderTop: '1px solid var(--dsw-alias-border-l3)', paddingTop: 12 },
           },
-          h('label', { htmlFor: `${id}-name` }, '设备名称'),
+          h('label', { htmlFor: `${id}-name`, style: labelStyle }, '设备名称'),
           h(Input, {
             id: `${id}-name`,
             'aria-label': '设备名称',
@@ -332,7 +326,7 @@ window.__ModuleLoader__.load({
             placeholder: '留空使用 DeepSeek Harness（计算机名）',
             onChange: (event) => update({ deviceName: event.target.value }),
           }),
-          h('label', { htmlFor: `${id}-description` }, '设备描述（可选）'),
+          h('label', { htmlFor: `${id}-description`, style: labelStyle }, '设备描述（可选）'),
           h('textarea', {
             id: `${id}-description`,
             'aria-label': '设备描述',
@@ -349,7 +343,7 @@ window.__ModuleLoader__.load({
         ),
           h('div', { style: { display: 'grid', gap: 8, padding: '8px 0' } },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
-            h('label', { htmlFor: `${id}-preset` }, 'Agent 预设（工具集）'),
+            h('label', { htmlFor: `${id}-preset`, style: labelStyle }, 'Agent 预设（工具集）'),
             h(InfoTip, { label: 'Agent 预设说明', text: selectedPreset?.broken
               ? `所选预设不可用：${selectedPreset.broken}`
               : (selectedPreset?.description ?? '工具由所选 Agent 预设决定。') }),
@@ -386,7 +380,7 @@ window.__ModuleLoader__.load({
             ),
           ),
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
-            h('label', { htmlFor: `${id}-model` }, '模型'),
+            h('label', { htmlFor: `${id}-model`, style: labelStyle }, '模型'),
             h(InfoTip, { label: '模型说明', text: `${
               modelSelection
                 ? `新会话使用：${value.provider}/${value.model}（插件指定）`
@@ -452,7 +446,9 @@ window.__ModuleLoader__.load({
               'p',
               { style: muted },
               permission
-                ? `新会话继承：${permission.name}（${permission.value}）`
+                ? permission.name === permission.value
+                  ? `新会话继承：${permission.name}`
+                  : `新会话继承：${permission.name}（${permission.value}）`
                 : catalogs.permissions
                   ? `新会话继承：${catalogs.permissions.defaultPreset}`
                   : '正在读取 Harness 的权限默认值。',
@@ -463,7 +459,7 @@ window.__ModuleLoader__.load({
             h(
               'p',
               { style: muted },
-              '权限跟随 Harness 设置 → 常规 → 权限。',
+              '权限跟随 Harness 设置 → 通用设置 → 权限。',
             ),
           ),
           catalogs.loading
@@ -614,7 +610,7 @@ window.__ModuleLoader__.load({
             {
               name: 'settings.section',
               id: 'dsh-a2a',
-              label: 'A2A 平台任务',
+              label: 'A2A 配置',
               order: 80,
               inject: () => actions,
             },

@@ -4,7 +4,7 @@ export function updateNoticeText(notice) {
     case 'available': return `A2A 插件发现新版本${version}，等待空闲后自动安装。`
     case 'restart_required': return `A2A 插件${version} 已安装，请完全退出并重新打开 Harness。`
     case 'updated': return `A2A 插件已更新到${version}。`
-    case 'error': return 'A2A 插件自动更新未完成，请在设置 → A2A 平台任务中查看。'
+    case 'error': return 'A2A 插件自动更新未完成，请在设置 → A2A 配置中查看。'
     default: return ''
   }
 }

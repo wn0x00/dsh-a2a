@@ -6,7 +6,7 @@ This reference covers configuration, authorization, updates and runtime behavior
 ## Platform address
 
 The plugin ships **without a built-in platform (OAuth authorization) address**.
-Before the first connection, open **设置 → A2A 平台任务**, fill in **平台地址**
+Before the first connection, open **设置 → A2A 配置**, fill in **平台地址**
 (the platform's HTTPS origin, for example `https://platform.example.com`;
 loopback `http://127.0.0.1` is accepted for local development) and select
 **保存任务配置**. The address is validated, normalized to its origin and
@@ -46,7 +46,7 @@ dsh --profile demo
 ```
 
 The native adapter inherits the Harness profile's default Agent preset and
-provider/model. Select another configured preset or model in **设置 → A2A 平台任务**.
+provider/model. Select another configured preset or model in **设置 → A2A 配置**.
 For a custom adapter without the Host default-model service, set `A2A_LLM_PROVIDER` and `A2A_LLM_MODEL` together. The native
 plugin runs one Agent entry point; it does not require `allowedSkills`,
 `A2A_ALLOWED_SKILLS`, or tool registration. Harness chooses and manages its own
@@ -54,7 +54,7 @@ internal tools.
 
 ## Updates inside Harness
 
-Enable **自动更新** in **A2A 平台任务 → 插件更新** to opt in; the
+Enable **自动更新** in **A2A 配置 → 插件更新** to opt in; the
 preference saves automatically. The Host checks stable versions every 24 hours even
 when Settings is closed. It persists the next check time per Harness profile;
 an overdue check runs after startup. Harness must remain running to check on
@@ -82,7 +82,7 @@ writes retain the draft and show retry/discard controls.
 Informational hints use hover/focus/click info icons. Reauthorization and manual
 installation use separate confirmation dialogs, keeping the page compact.
 
-Open **A2A 平台任务 → 插件更新** and select **检查更新**. The update source is
+Open **A2A 配置 → 插件更新** and select **检查更新**. The update source is
 the public npm registry: the plugin reads the `@guanzhu.me/dsh-a2a` registry
 document, selects the highest published strict SemVer version and freezes that
 exact release for confirmation. No credential or token is required or stored.
@@ -107,7 +107,7 @@ a local file dependency.
 
 ## Platform account authorization
 
-Open **设置 → A2A 平台任务**, set **平台地址**, optionally set **设备名称** and
+Open **设置 → A2A 配置**, set **平台地址**, optionally set **设备名称** and
 **设备描述**, then select **保存任务配置** and **连接平台**. The plugin reads the
 platform's authorization metadata, creates a device authorization request with
 an S256 PKCE challenge, and opens the platform's **连接本地智能体** authorization
@@ -197,7 +197,7 @@ device grants. The backend must separately support the external issuer.
 
 ## Workspace and conversations
 
-Open **设置 → A2A 平台任务**, also available in
+Open **设置 → A2A 配置**, also available in
 **Plugins → @guanzhu.me/dsh-a2a → 配置**. **工作区（项目目录）** is one directory
 setting: choose an existing Harness workspace, pick a local folder, or enter a
 full path. These are three ways to choose the same directory. The first task

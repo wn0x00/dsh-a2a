@@ -87,12 +87,27 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
   const h = React.createElement
   const ConfirmDialog = createConfirmDialog(React, Modal)
   const muted = { margin: 0, opacity: 0.72, fontSize: 12, lineHeight: 1.6 }
+  const icon = (children) => h('svg', {
+    width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true,
+    stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
+  }, ...children)
+  const reauthorizeIcon = icon([
+    h('path', { d: 'M23 4v6h-6' }),
+    h('path', { d: 'M1 20v-6h6' }),
+    h('path', { d: 'M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15' }),
+  ])
+  const revokeIcon = icon([
+    h('path', { d: 'M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3m-6 0H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3' }),
+    h('line', { x1: 8, y1: 12, x2: 16, y2: 12 }),
+    h('line', { x1: 3, y1: 3, x2: 21, y2: 21 }),
+  ])
   return function ConnectionPanel({
     connection,
     disabled,
     readOnly,
     changed,
     disabledReason,
+    label,
     children,
   }) {
     const [snapshot, setSnapshot] = React.useState(null)
@@ -224,7 +239,7 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
         }
       }
     }
-    const [label, description] = failed
+    const [statusLabel, description] = failed
       ? ['无法获取本机连接状态', statusHints[failure.kind]]
       : snapshot
         ? (phases[snapshot.phase] ?? phases.error)
@@ -250,31 +265,39 @@ export function createConnectionPanel(React, Button, { Tooltip, Modal } = {}) {
     const revoke = confirm === 'revoke'
     const recovery = typeof confirm === 'object' && confirm !== null ? confirm : null
     const showProgress = !failed && ['starting', 'connecting', 'authorizing', 'revoking', 'updating'].includes(snapshot?.phase)
+    const showAuthIcons = !failed && authorized && !['authorizing', 'revoking', 'updating'].includes(snapshot?.phase)
     return h('section', {
       'aria-label': '平台连接状态',
       style: { padding: 16, display: 'grid', gap: 10, borderRadius: 10,
         border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-layer-1)' },
     },
-      children,
+      label,
+      h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+        h('div', { style: { flex: '1 1 0', minWidth: 0 } }, children),
+        showAuthIcons
+          ? h(Button, { type: 'button', variant: 'ghost', 'aria-label': '重新授权', title: '重新授权',
+            disabled: blocked || !snapshot.canReauthorize, onClick: () => setConfirm('reauthorize'),
+            style: { minWidth: 28, padding: 4, flexShrink: 0 } }, reauthorizeIcon) : null,
+        showAuthIcons
+          ? h(Button, { type: 'button', variant: 'ghost', 'aria-label': '解除授权',
+            title: !canRevoke ? '有任务运行或平台暂不支持解除授权。' : '解除授权',
+            disabled: blocked || !canRevoke, onClick: () => setConfirm('revoke'),
+            style: { minWidth: 28, padding: 4, flexShrink: 0 } }, revokeIcon) : null,
+      ),
       showProgress || failed || (!failed && snapshot?.phase === 'error' && snapshot.notice !== 'revocation_failed')
         ? h('p', { role: failed ? 'alert' : 'status', style: muted },
-          label, '。', description) : null,
+          statusLabel, '。', description) : null,
       failed && snapshot ? h('p', { style: muted }, '显示的信息可能已过期，请刷新后再操作。') : null,
       failed && failure.code ? h('details', { style: muted },
         h('summary', { style: { cursor: 'pointer' } }, '诊断信息'),
         h('code', { style: { overflowWrap: 'anywhere' } }, failure.code)) : null,
       !failed && notices[snapshot?.notice] ? h('p', { role: 'status', style: muted }, notices[snapshot.notice]) : null,
       h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 } },
-        !failed && snapshot && !['authorizing', 'revoking', 'updating'].includes(snapshot.phase)
+        !failed && snapshot && !authorized && !['authorizing', 'revoking', 'updating'].includes(snapshot.phase)
           ? h(Button, { type: 'button', variant: 'primary',
-            disabled: blocked || (authorized ? !snapshot.canReauthorize : !snapshot.canConnect),
-            onClick: () => authorized ? setConfirm('reauthorize') : act('connect'),
-          }, authorized ? '重新授权' : '申请授权') : null,
-        authorized && !['authorizing', 'revoking', 'updating'].includes(snapshot.phase)
-          ? h(Button, { type: 'button', variant: 'ghost', disabled: blocked || !canRevoke,
-            title: !canRevoke ? '有任务运行或平台暂不支持解除授权。' : undefined,
-            onClick: () => setConfirm('revoke'),
-          }, '解除授权') : null,
+            disabled: blocked || !snapshot.canConnect,
+            onClick: () => act('connect'),
+          }, '申请授权') : null,
         !failed && snapshot?.phase === 'authorizing'
           ? h(Button, { type: 'button', variant: 'outline', disabled: readOnly || busy || !snapshot.canCancelAuthorization,
             onClick: () => act('cancelAuthorization') }, '取消本次授权') : null,

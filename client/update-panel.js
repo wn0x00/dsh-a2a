@@ -227,22 +227,17 @@ export function createUpdatePanel(React, Button, { Tooltip, Modal } = {}) {
         }
       }
     }
-    let [label, description] = snapshot
-      ? (phases[snapshot.phase] ?? phases.error)
-      : ['读取更新状态…', '正在读取本机插件版本。']
-    if (unknown) [label, description] = phases.outcome_unknown
-    else if (readError)
-      [label, description] = [
-        '无法读取更新状态',
-        '请确认插件已启用。若刚更新插件，请完全退出 Harness 后重新打开，再刷新更新状态。',
-      ]
-    else if (operation === 'install' && !progressing.has(snapshot?.phase))
-      [label, description] = [
-        '正在提交更新请求',
-        '正在等待 Harness 接收更新请求，请勿重复安装。',
-      ]
-    else if (operation === 'check' && !progressing.has(snapshot?.phase))
-      [label, description] = ['正在检查更新', phases.checking[1]]
+    const status = unknown
+      ? phases.outcome_unknown[0]
+      : readError
+        ? '无法读取更新状态'
+        : !snapshot
+          ? '正在读取版本'
+          : operation === 'install' && !progressing.has(snapshot?.phase)
+            ? '正在提交更新请求'
+            : operation === 'check' && !progressing.has(snapshot?.phase)
+              ? phases.checking[0]
+              : (phases[snapshot.phase] ?? phases.error)[0]
     const errorHint =
       snapshot?.error && Object.hasOwn(errors, snapshot.error)
         ? errors[snapshot.error]
@@ -251,51 +246,60 @@ export function createUpdatePanel(React, Button, { Tooltip, Modal } = {}) {
     const autoTip = '开启后，每 24 小时检查正式版本，空闲时自动安装并提醒。Harness 需保持运行；错过的检查会在下次启动时补做，重启由你决定。'
       + (snapshot?.automatic?.enabled && snapshot.automatic.nextCheckAt
         ? ` 下次检查：${new Date(snapshot.automatic.nextCheckAt).toLocaleString()}` : '')
-    return h(
-      'section',
-      { 'aria-label': '插件更新', style: { padding: 16, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1)', display: 'grid', gap: 10 } },
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-        h('strong', { style: { fontSize: 14 } }, '插件更新'),
-        h('span', { style: muted, title: `${snapshot ? `本次运行版本 ${snapshot.currentVersion}。` : ''}${label}。更新源：npm 官方仓库。` },
-          snapshot ? `v${snapshot.currentVersion}` : '读取版本…'),
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto' } },
-          !readError && snapshot && !progressing.has(snapshot.phase) && snapshot.phase !== 'restart_required' && !unknown
-            ? snapshot.phase === 'available' && snapshot.latestVersion
+    const primaryAction =
+      readError || !snapshot
+        ? null
+        : unknown || snapshot.phase === 'restart_required'
+          ? h(Button, { type: 'button', variant: 'outline', disabled: disabled || readOnly || operation !== null,
+            onClick: () => run('check') }, '核对更新结果')
+          : progressing.has(snapshot.phase)
+            ? null
+            : snapshot.phase === 'available' && snapshot.latestVersion
               ? h(Button, { type: 'button', variant: 'primary', disabled: installBlocked,
                 title: !snapshot.canInstall ? '等待任务或授权结束后可更新' : undefined,
                 onClick: () => setConfirmVersion(snapshot.latestVersion) }, `更新到 ${snapshot.latestVersion}`)
               : h(Button, { type: 'button', variant: 'ghost', disabled: disabled || readOnly || processing,
                 onClick: () => run('check') }, '检查更新')
-            : null,
+    const notes = []
+    if (readError) notes.push(h('p', { key: 'read', style: muted },
+      '请确认插件已启用。若刚更新插件，请完全退出 Harness 后重新打开，再刷新更新状态。'))
+    if (unknown) notes.push(h('p', { key: 'unknown', style: muted }, phases.outcome_unknown[1]))
+    if (snapshot?.phase === 'restart_required') notes.push(h('p', { key: 'restart', style: muted }, phases.restart_required[1]))
+    if (!readError && errorHint && !unknown) notes.push(h('p', { key: 'hint', role: 'alert', style: muted }, errorHint))
+    if (!readError && !unknown && snapshot?.phase === 'available' && !snapshot.canInstall)
+      notes.push(h('p', { key: 'wait', style: muted }, '等待任务或授权结束后可更新。'))
+    if (actionError && !unknown) notes.push(h('p', { key: 'action', role: 'alert', style: muted }, '检查失败，请刷新状态后重试。'))
+    if (!attention && snapshot?.automatic?.enabled && snapshot.automatic.notice)
+      notes.push(h('p', { key: 'notice', role: 'status', style: muted }, updateNoticeText(snapshot.automatic.notice)))
+    return h(
+      'section',
+      { 'aria-label': '插件更新', style: { padding: 16, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1)', display: 'grid', gap: 10 } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+        h('strong', { style: { fontSize: 14 } }, '插件更新'),
+        h('span', { style: muted, title: `${snapshot ? `本次运行版本 ${snapshot.currentVersion}。` : ''}${status}。更新源：npm 官方仓库。` },
+          snapshot ? `v${snapshot.currentVersion}` : '读取版本…'),
+        snapshot
+          ? h('span', { role: 'status', 'aria-live': 'polite', style: muted },
+            `· ${status}${snapshot.phase === 'available' && !readError && !unknown && snapshot.latestVersion ? ` · ${snapshot.latestVersion}` : ''}`)
+          : null,
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto' } },
+          primaryAction,
           h(Button, { type: 'button', variant: 'ghost', 'aria-label': '刷新更新状态', title: '刷新更新状态',
             disabled: reading, 'aria-busy': reading, onClick: refresh,
             style: { minWidth: 24, padding: 4, fontSize: 17 } }, '↻'),
         ),
       ),
       onAutoChange ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
-        h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 } },
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 } },
           h('input', { type: 'checkbox', role: 'switch', 'aria-label': '自动更新', checked: autoEnabled,
             disabled: autoDisabled, onChange: (event) => onAutoChange(event.target.checked) }),
           '自动更新',
         ),
         h(InfoTip, { label: '自动更新说明', text: autoTip }),
       ) : null,
-      attention ? h('div', { style: { display: 'grid', gap: 6 } },
-        h('p', { role: 'status', 'aria-live': 'polite', style: muted }, label,
-          snapshot?.phase === 'available' && !readError && !unknown ? ` · ${snapshot.latestVersion}` : ''),
-        readError || unknown || snapshot?.phase === 'restart_required'
-          ? h('p', { style: muted }, description) : null,
-        !readError && errorHint && !unknown ? h('p', { role: 'alert', style: muted }, errorHint) : null,
-        h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-          unknown || snapshot?.phase === 'restart_required'
-            ? h(Button, { type: 'button', variant: 'outline', disabled: disabled || readOnly || operation !== null,
-              onClick: () => run('check') }, '核对更新结果') : null,
-        ),
-        !readError && snapshot?.phase === 'available' && !snapshot.canInstall && !unknown
-          ? h('p', { style: muted }, '等待任务或授权结束后可更新。') : null,
-      ) : null,
-      !attention && snapshot?.automatic?.enabled && snapshot.automatic.notice
-        ? h('p', { role: 'status', style: muted }, updateNoticeText(snapshot.automatic.notice)) : null,
+      notes.length
+        ? h('div', { style: { display: 'grid', gap: 6 } }, notes)
+        : null,
       confirmVersion && !readError && !unknown
         ? h(ConfirmDialog, {
             title: `确认更新到 ${confirmVersion}`,
@@ -307,7 +311,6 @@ export function createUpdatePanel(React, Button, { Tooltip, Modal } = {}) {
             h(Button, { type: 'button', variant: 'primary', disabled: installBlocked || snapshot?.latestVersion !== confirmVersion,
               onClick: () => run('install', confirmVersion) }, `确认安装 ${confirmVersion}`),
           )) : null,
-      actionError && !unknown ? h('p', { role: 'alert', style: muted }, '检查失败，请刷新状态后重试。') : null,
     )
   }
 }
